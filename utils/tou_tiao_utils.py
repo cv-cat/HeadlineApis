@@ -7,6 +7,8 @@ import sys
 import random
 import urllib
 from os import path
+
+
 def trans_cookies(cookies_str):
     cookies = dict()
     for i in cookies_str.split("; "):
@@ -15,6 +17,7 @@ def trans_cookies(cookies_str):
         except:
             continue
     return cookies
+
 
 if getattr(sys, 'frozen', None):
     basedir = sys._MEIPASS
@@ -34,13 +37,16 @@ except:
     sign_path = path.join(basedir, '..', 'static', 'sign.js')
     sign_js = execjs.compile(open(sign_path, 'r', encoding='utf-8').read(), cwd=node_modules)
 
+
 def generate_a_bogus(query, data=""):
     a_bogus = dy_js.call('get_ab', query, data)
     return a_bogus
 
+
 def generate_sign(url):
     sign = sign_js.call('genserate_sign', url)
     return sign
+
 
 def generate_msToken(randomlength=107):
     random_str = ''
@@ -50,6 +56,7 @@ def generate_msToken(randomlength=107):
         random_str += base_str[random.randint(0, length)]
     return random_str
 
+
 def splice_url(params):
     splice_url_str = ''
     for key, value in params.items():
@@ -57,6 +64,7 @@ def splice_url(params):
             value = ''
         splice_url_str += key + '=' + urllib.parse.quote(str(value)) + '&'
     return splice_url_str[:-1]
+
 
 def get_headers(referer="https://www.toutiao.com/"):
     return {
@@ -75,7 +83,7 @@ def get_headers(referer="https://www.toutiao.com/"):
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/117.0"
     }
 
-# 时间戳转时间 1731643083 -> 2022-11-01 12:24:43
+
 def trans_time(timestamp):
     timeArray = time.localtime(timestamp)
     otherStyleTime = time.strftime("%Y-%m-%d %H:%M:%S", timeArray)
@@ -87,13 +95,13 @@ def timestamp_to_str(timestamp):
     dt = time.strftime("%Y-%m-%d %H:%M:%S", time_local)
     return dt
 
-# %Y-%m-%d %H:%M:%S 转时间戳 10位
+
 def str_to_timestamp(str):
     time_array = time.strptime(str, "%Y-%m-%d %H:%M:%S")
     timestamp = int(time.mktime(time_array))
     return timestamp
 
-# 判断日期与当前日期是否在n天内
+
 def is_n_days_ago(date, n):
     now = time.time()
     date = str_to_timestamp(date)

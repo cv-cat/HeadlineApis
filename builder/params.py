@@ -1,5 +1,5 @@
 import time
-from utils.TouTiaoUtils import generate_msToken, splice_url, generate_a_bogus
+from utils.tou_tiao_utils import generate_msToken, splice_url, generate_a_bogus
 
 
 class Params:

@@ -1,4 +1,4 @@
-from utils.TouTiaoUtils import trans_cookies
+from utils.tou_tiao_utils import trans_cookies
 
 class TouTiaoAuth:
     def __init__(self):
