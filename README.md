@@ -298,8 +298,8 @@ docker run -d -p 5000:5000 toutiao-platform
 
 如果你对爬虫和 AI Agent 感兴趣，请加作者主页 wx 通过邀请加入群聊
 
-ps: 请加群4、17、18，人满或者过期 issue | wx 提醒
+ps: 请加群21、22、23，人满或者过期 issue | wx 提醒
 
-| group14 | group17 | group18 |
+| group21 | group22 | group23 |
 |:--:|:--:|:--:|
-| <img width="280" alt="group14" src="https://github.com/user-attachments/assets/4ff4e202-7fc2-42f7-910a-e12d55456bd1" /> | <img width="280" alt="group17" src="https://github.com/user-attachments/assets/6406398d-a4c7-4b08-a92c-496ea10a4440" /> | <img width="280" alt="group18" src="https://github.com/user-attachments/assets/57f6a18c-d9d0-4343-b2eb-c32e1e991115" /> |
+| <img width="280" alt="group21" src="https://github.com/user-attachments/assets/fdde52de-b2b9-48a5-a996-cd83ab018413" /> | <img width="280" alt="group22" src="https://github.com/user-attachments/assets/86ee2c3c-7f9d-4f0f-81f0-997edaf2b255" /> | <img width="280" alt="group23" src="https://github.com/user-attachments/assets/288fb4f0-2c4d-4b5c-96bf-2a271233339b" /> |
