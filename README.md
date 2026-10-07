@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | Cookie 会话 | `TouTiaoAuth.from_cookie`、`prepare_auth` | 复用已有网页 Cookie 进行读取，本地解析与契约测试通过；实际 Cookie 有效性需本人账号验证 |
 | 可见浏览器登录 | `TouTiaoAuth.from_browser_login`；旧名 `from_qrcode_login` 保留 | 独立 Chromium 打开头条创作者登录页，在官方页面选择二维码或手机验证码；登录后只读检查创作者首页、新 Cookie 与登录状态接口。本地假浏览器契约测试通过，真实辅助流程待验证 |
-| 头条号网页只读 API | `TouTiaoCreatorWebApi.is_logged_in`、`has_account_auth`、`list_drafts` | 本人已登录页面观察到实际 GET 与成功响应；匿名 Python GET 登录状态也返回预期结构。Python Cookie 客户端通过契约测试，真实账号在 Python 中待验证 |
+| 头条号网页状态与草稿 | `TouTiaoCreatorWebApi.is_logged_in`、`has_account_auth`、`list_drafts`、`delete_draft` | 本人已登录页面观察到实际 GET，以及指定草稿删除 POST 的成功响应；Python Cookie 客户端通过契约测试，真实账号在 Python 中待验证。`delete_draft` 会永久删除指定草稿 |
 | 头条 OAuth 授权与续期 | `TouTiaoOAuth.authorize_url`、`exchange_code`、`refresh_access_token` | 官方端点有文档，mock 请求测试通过；真实授权未验证 |
 | 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测返回 6 个头条作品链接；当前只支持第 0 页，后续页明确报错，避免把重复首页当成翻页结果 |
 | Item 详情 | `TouTiaoApi.item`、旧 `get_work_info` | 接受 `https://www.toutiao.com/article/{id}/`、`video/{id}/`、`item/{id}/`、`group/{id}/`；解析契约测试通过，线上详情页面待验证 |
@@ -73,7 +73,7 @@ with TouTiaoAuth.from_browser_login(timeout_seconds=600) as auth:
 
 旧的 `TouTiaoAuth.from_qrcode_login()` 是兼容别名，打开同一官方页面，仍可选择手机验证码。这项核验依据创作者首页的最终 URL、登录前后的 Cookie 变化和只读登录状态接口。浏览器辅助流程尚未在本人账号上端到端实测，不能证明私有发布接口可用，也不生成 `open_id` 或 Creator Open API 的 OAuth token。浏览器关闭后，会话对象仍在当前 Python 进程内；进程结束即消失。`main.py` 保持只读环境变量入口，不会把登录结果输出成 Cookie 字符串。
 
-### 头条号网页只读 API
+### 头条号网页状态与草稿
 
 已登录头条号页面实际发起 `user_login_status_api`、`check_user_auth`、`draft_list` 三个 GET。`draft_list` 的 `type=0&count=20` 在本人网页会话中返回 `code=0` 与数组；同源只读请求验证省略页面请求中的 `app_id` 后仍成功。下面的 Python 客户端复用 `auth.creator_cookie`，只访问 `mp.toutiao.com`，不使用 Open API 的 `access_token`。返回的草稿可能包含本人作品内容，不要打印、提交或共享原始响应。
 
@@ -84,11 +84,13 @@ from tou_tiao_creator_web_api import TouTiaoCreatorWebApi
 with TouTiaoAuth.from_browser_login() as auth:
     web = TouTiaoCreatorWebApi(auth)
     assert web.is_logged_in()
-    account_info_complete = web.has_account_auth()
     drafts = web.list_drafts(count=20)  # 只在内存使用，不输出作品内容
+# 明确选定自己的草稿后，才调用 web.delete_draft(draft["gid"], draft_type=draft["draft_type"])
 ```
 
-`has_account_auth()` 只反映网页的账号资料标志，不是最终发文许可。本次账号的创作中心提示完善资料以解锁文章/视频权益，`check_user_auth` 返回 `has_auth=false`；点击“立即完善”进入账号类型选择页，需要本人选择适用类型并完成后续资料。编辑器可以打开，但未填稿、未提交发布，因此当前账号的发布能力没有验收。上述网页 Cookie 也不能替代 Creator Open API OAuth 授权。
+`has_account_auth()` 只在接口 `code=0` 时读取布尔标志，其他业务码会抛出 `CreatorWebApiError`。本次账号曾出现“请完善账号信息”提示，随后页面明确显示“账号信息已完善，已为你解锁发布文章、视频等权益功能”；但后来独立 GET `/mp/agw/media/check_user_auth` 仍返回 HTTP 200、`code=100002`、`has_auth=false`。这个非零业务码的语义尚未确认，不能以其中的 `has_auth` 推断当前发文权限。编辑器可打开，公开发布未验收。上述网页 Cookie 也不能替代 Creator Open API OAuth 授权。
+
+在本人网页编辑器输入中性临时内容时，页面自动请求 `POST /mp/agw/article/publish`，表单含 `save=0`，响应 `code=0` 和 `data.pgc_id`；随后草稿列表出现对应 `gid`，二者相同。删除该临时草稿时，网页请求 `POST /mp/agw/creator_center/delete_draft?app_id=1231`，JSON body 为 `{"drafts":[{"draft_type":2,"gid":"所选草稿 ID"}]}`，返回 `code=0`；再次读取草稿列表，临时草稿已消失。`delete_draft(gid, draft_type=...)` 仅封装这一指定草稿删除请求，参数应来自同一条草稿记录，调用后不可恢复。自动保存请求带页面生成的签名参数及多项编辑器状态，尚未建立可靠的独立请求契约；仓库不封装网页草稿写入或图文公开发布。
 
 ## OAuth 与视频 Creator
 
@@ -147,8 +149,9 @@ auth.close()
 | --- | --- |
 | `GET https://so.toutiao.com/search`、`GET https://www.toutiao.com/article/{id}/` | 本仓库原有 `tou_tiao_api.py`，本轮保持兼容并加强输入与错误处理 |
 | `GET https://mp.toutiao.com/mp/agw/media/user_login_status_api` | 本人已登录头条号页面网络请求：`code=0`、`data.is_login=true`；匿名 Python GET 返回 `data.is_login=false` |
-| `GET https://mp.toutiao.com/mp/agw/media/check_user_auth` | 本人头条号文章编辑器页面实际请求，返回 `code=0`、`has_auth=false`；仅用于账号资料状态 |
-| `GET https://mp.toutiao.com/mp/agw/creator_center/draft_list?type=0&count=20` | 本人头条号草稿页实际请求与同源只读重试：`code=0`、`draft_list` 数组；未保存或输出草稿内容 |
+| `GET https://mp.toutiao.com/mp/agw/media/check_user_auth` | 资料完善前曾观察到 `code=0`、`has_auth=false`；资料完善成功页出现后，独立 GET 为 HTTP 200、`code=100002`、`has_auth=false`。非零业务码语义未明，不据此判定发布权限 |
+| `GET https://mp.toutiao.com/mp/agw/creator_center/draft_list?type=0&count=20` | 本人头条号草稿页实际请求与同源只读重试：`code=0`、`draft_list` 数组；临时草稿删除后复查已消失 |
+| `POST https://mp.toutiao.com/mp/agw/creator_center/delete_draft?app_id=1231` | 本人网页删除指定临时草稿的请求与响应：JSON `drafts` 数组含 `draft_type`、`gid`，返回 `code=0`；只封装显式删除 |
 | `GET https://open.snssdk.com/oauth/authorize/`、`POST https://open.snssdk.com/oauth/access_token/` | [头条获取授权码](https://open.douyin.com/platform/resource/docs/openapi/account-permission/toutiao-get-permission-code)、[获取 access token](https://open.douyin.com/platform/resource/docs/openapi/account-permission/get-access-token) |
 | `POST https://open.snssdk.com/oauth/refresh_token/` | [官方刷新 access token 文档](https://open.douyin.com/platform/resource/docs/openapi/account-permission/refresh-access-token)、[头条帐号 OAuth 说明](https://open.douyin.com/platform/resource/docs/develop/permission/toutiao-or-xigua/OAuth2.0/) |
 | `POST https://open.douyin.com/toutiao/video/upload/` | [官方上传视频文档](https://open.douyin.com/platform/resource/docs/openapi/video-management/toutiao/create-video/upload-video) |
@@ -157,7 +160,7 @@ auth.close()
 | `POST https://open.douyin.com/toutiao/video/data/` | [官方特定视频数据文档](https://open.douyin.com/platform/resource/docs/openapi/video-management/toutiao/search-video/video-data/)；请求字段显示“暂无数据” |
 | 图文发布范围 | [官方头条内容发布接入方案](https://open.douyin.com/platform/resource/docs/ability/content-management/toutiao-publish-solution/)说明开放接口暂不支持头条文章、微头条 |
 
-创作者网页的 `/mp/agw/article/publish` 见[公开项目的协议记录](https://github.com/xc-2000/toutiao-auto-publisher/blob/main/README.md)，但本仓库没有当前账号的脱敏请求样本、安全参数和发布结果，因此没有封装或宣称可用。
+创作者网页自动保存时确实调用了 `/mp/agw/article/publish`，本次只确认 `save=0`、响应 `pgc_id` 与草稿列表 `gid` 的关联；不能把该路径名或一次草稿结果解释为公开发布已验收。该请求有页面生成的签名参数和多项编辑器字段，仓库没有封装网页写入。先前的[公开项目协议记录](https://github.com/xc-2000/toutiao-auto-publisher/blob/main/README.md)只作背景参考。
 
 ## 验证
 

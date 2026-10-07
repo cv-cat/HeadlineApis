@@ -27,6 +27,10 @@ class FakeSession:
         self.calls.append((url, kwargs))
         return self.responses.pop(0)
 
+    def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return self.responses.pop(0)
+
 
 class CreatorWebApiTest(unittest.TestCase):
     def test_read_only_status_permission_and_drafts_use_creator_cookie(self):
@@ -82,3 +86,30 @@ class CreatorWebApiTest(unittest.TestCase):
             TouTiaoCreatorWebApi(auth).is_logged_in()
         self.assertEqual(caught.exception.code, 302)
         self.assertIs(session.calls[0][1]["allow_redirects"], False)
+
+    def test_delete_draft_uses_explicit_id_and_type(self):
+        session = FakeSession([FakeResponse({"code": 0, "message": "deleted"})])
+        auth = TouTiaoAuth(session=session)
+        auth.prepare_creator_auth("creator_session=web-secret")
+        api = TouTiaoCreatorWebApi(auth)
+        self.assertIsNone(api.delete_draft("test-draft-id", draft_type=2))
+        self.assertEqual(len(session.calls), 1)
+        url, kwargs = session.calls[0]
+        self.assertEqual(url, "https://mp.toutiao.com/mp/agw/creator_center/delete_draft")
+        self.assertEqual(kwargs["params"], {"app_id": 1231})
+        self.assertEqual(kwargs["json"], {"drafts": [{"draft_type": 2, "gid": "test-draft-id"}]})
+        self.assertEqual(kwargs["cookies"], {"creator_session": "web-secret"})
+        self.assertEqual(kwargs["headers"]["Referer"], "https://mp.toutiao.com/profile_v4/manage/draft")
+        self.assertIs(kwargs["allow_redirects"], False)
+        for gid, draft_type in (("", 2), ("test-draft-id", -1), ("test-draft-id", True)):
+            with self.assertRaises(ValueError):
+                api.delete_draft(gid, draft_type=draft_type)
+        self.assertEqual(len(session.calls), 1)
+
+    def test_nonzero_auth_code_does_not_report_account_permission(self):
+        session = FakeSession([FakeResponse({"code": 100002, "has_auth": False})])
+        auth = TouTiaoAuth(session=session)
+        auth.prepare_creator_auth("creator_session=web-secret")
+        with self.assertRaises(CreatorWebApiError) as caught:
+            TouTiaoCreatorWebApi(auth).has_account_auth()
+        self.assertEqual(caught.exception.code, 100002)
