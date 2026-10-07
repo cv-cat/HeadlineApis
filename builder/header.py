@@ -25,7 +25,7 @@ class HeaderBuilder:
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Pragma": "no-cache",
-            "Referer": "https://so.toutiao.com/search?dvpf=pc&source=pagination&keyword=%E5%8D%97%E4%BA%AC&pd=synthesis&action_type=pagination&page_num=1&search_id=202409031511249321F5AA49F1400A0BCC&from=search_tab&cur_tab_title=search_tab",
+            "Referer": "https://so.toutiao.com/",
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "same-origin",

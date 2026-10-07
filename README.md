@@ -1,306 +1,97 @@
-<div align="center">
-    <a href="https://www.python.org/">
-        <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
-    </a>
-    <a href="https://nodejs.org/zh-cn/">
-        <img src="https://img.shields.io/badge/nodejs-20%2B-green" alt="NodeJS 20+">
-    </a>
-    <a href="https://fastapi.tiangolo.com/">
-        <img src="https://img.shields.io/badge/FastAPI-0.115%2B-009688" alt="FastAPI">
-    </a>
-</div>
+# HeadlineApis
 
-# 📰 Toutiao Platform
+今日头条读取 API 与头条官方开放平台视频 Creator API。Python 3.10+，Node.js 20+。`TouTiaoApi` 旧入口保留。
 
-**✨ 专业的今日头条数据采集解决方案，支持搜索、用户主页、图文与视频内容全量抓取**
+## 能力状态
 
-当你需要让 AI Agent 感知今日头条内容生态——自动采集用户作品、分析内容数据、驱动内容运营策略——第一道墙往往不是模型能力，而是**平台数据获取能力的缺失**。
+| 能力 | 入口 | 状态 |
+| --- | --- | --- |
+| Cookie 会话 | `TouTiaoAuth.from_cookie`、`prepare_auth` | 本地解析与契约测试通过；Cookie 是否有效需用户账号验证 |
+| 头条 OAuth 授权 | `TouTiaoOAuth.authorize_url`、`exchange_code` | 官方端点有文档，mock 请求测试通过；真实授权未验证 |
+| 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测返回 6 个头条作品链接；分页请求实测重复首页，分页能力待确认 |
+| Item 详情 | `TouTiaoApi.item`、旧 `get_work_info` | 接受 `https://www.toutiao.com/article/{id}/`、`video/{id}/`、`item/{id}/`、`group/{id}/`；解析契约测试通过，线上详情页面待验证 |
+| 用户页、作品列表、视频直链 | `TouTiaoApi` 原有方法 | 保留兼容入口；本轮没有账号级线上测试 |
+| 视频上传 | `TouTiaoCreatorApi.upload_video` | 官方端点和表单字段有文档，mock 请求测试通过；真实上传未验证 |
+| 视频发布 | `TouTiaoCreatorApi.publish_video` | 官方端点已确认；官方页面目前未给完整请求体字段，`video_id`/`text` 约定待真实授权账号验证 |
+| 已发布视频列表 | `TouTiaoCreatorApi.list_videos` | 官方端点已确认；分页参数参考公开 SDK，真实账号待验证 |
+| 特定视频数据 | `TouTiaoCreatorApi.get_video_data` | 官方端点已确认；请求体由调用方提供，字段待验证 |
+| 图文、微头条发布 | `publish_article` 明确抛出 `NotImplementedError` | 官方头条发布接入方案明确目前只支持小视频；创作者网页私有接口待单独验证 |
 
-本项目做的事很简单：把这道墙拆掉。
+**上传不会自动发布。** 只有调用 `publish_video` 才会提交作品；成功提交后仍有平台审核过程。Creator API 需要已审核应用及用户授权的 `toutiao.video.create` 或 `toutiao.video.data` 权限。Cookie 不能代替开放平台的 access token。
 
-**⚠️ 严禁用于爬取用户隐私、违规商业用途！本项目仅供学习与技术研究使用，后果自负。**
-
-## 🌟 功能特性
-
-- ✅ **搜索采集**
-  - 支持关键词搜索，返回综合搜索结果原始数据
-- ✅ **用户信息采集**
-  - 获取用户主页信息：昵称、头像、粉丝数、点赞数等
-- ✅ **用户作品采集**
-  - 支持单页获取与自动翻页全量获取
-  - 同时覆盖视频、图文、微头条三种内容类型
-- ✅ **作品详情采集**
-  - 获取正文内容、图片列表、视频列表
-- ✅ **视频直链解析**
-  - 自动 Base64 解码，返回可直接访问的视频 MP4 地址
-- 🔐 **a_bogus / msToken / _signature 自动计算**
-  - 内嵌 Node.js 运行时，自动生成今日头条接口鉴权参数
-- 🚀 **高性能服务**
-  - 基于 FastAPI + Uvicorn 异步服务
-  - 支持 Docker 一键部署
-
-## 🛠️ 快速开始
-
-### ⛳ 运行环境
-
-- Python 3.10+
-- Node.js 20+
-
-### 🎯 本地安装
+## 安装与只读示例
 
 ```bash
 pip install -r requirements.txt
 cd static && npm install
+cd ..
+python main.py --help
 ```
 
-### 🚀 运行项目
+`main.py` 是只读 CLI，并非 HTTP 服务。搜索和详情用环境变量传 Cookie，避免写进命令历史；公开页面在无需 Cookie 的条件下也可以尝试，但平台可能限制。
+
+```powershell
+$env:TOUTIAO_COOKIE = '从本人浏览器获取的 Cookie'
+python main.py search '人工智能' --page 0
+python main.py item 'https://www.toutiao.com/article/1234567890/'
+```
+
+Python 调用：
+
+```python
+from builder.auth import TouTiaoAuth
+from tou_tiao_api import TouTiaoApi
+
+with TouTiaoAuth.from_cookie(cookie_str) as auth:
+    api = TouTiaoApi()
+    results = api.search("人工智能", 0, auth)  # {raw_html, items, search_id}
+    article = api.item("https://www.toutiao.com/article/1234567890/", auth)
+    legacy = api.getSearchInfo("人工智能", 0, auth)  # (success, msg, HTML)
+```
+
+## OAuth 与视频 Creator
+
+开发者先在头条开放平台申请权限，把授权 URL 展示给本人确认，再从回调取得 `code`。`state` 应由应用生成随机值，并在回调验证。`client_secret` 只应保存在服务端。
+
+```python
+from builder.auth import TouTiaoOAuth
+from tou_tiao_creator_api import TouTiaoCreatorApi
+
+url = TouTiaoOAuth.authorize_url(
+    client_key, redirect_uri, ["toutiao.video.create", "toutiao.video.data"], state
+)
+# 用户打开 url 授权；回调后校验 state，再将 code 交给服务端：
+auth = TouTiaoOAuth.exchange_code(client_key, client_secret, code)
+creator = TouTiaoCreatorApi(auth)
+uploaded = creator.upload_video("clip.mp4")
+video_id = uploaded["video"]["video_id"]
+# 用户确认发布后再单独调用；请求体仍需真实授权账号验证：
+published = creator.publish_video(video_id, "视频标题")
+videos = creator.list_videos(cursor=0, count=10)
+auth.close()
+```
+
+单文件上传限制为 128 MiB；更大的视频需要官方分片接口，本仓库暂未封装。`get_video_data(payload)` 会原样发送调用方给出的请求体；不要把未知字段当作已验证的 API 契约。
+
+## 端点依据
+
+| 端点 | 证据 |
+| --- | --- |
+| `GET https://so.toutiao.com/search`、`GET https://www.toutiao.com/article/{id}/` | 本仓库原有 `tou_tiao_api.py`，本轮保持兼容并加强输入与错误处理 |
+| `GET https://open.snssdk.com/oauth/authorize/`、`POST https://open.snssdk.com/oauth/access_token/` | [头条获取授权码](https://open.douyin.com/platform/resource/docs/openapi/account-permission/toutiao-get-permission-code)、[获取 access token](https://open.douyin.com/platform/resource/docs/openapi/account-permission/get-access-token) |
+| `POST https://open.douyin.com/toutiao/video/upload/` | [官方上传视频文档](https://open.douyin.com/platform/resource/docs/openapi/video-management/toutiao/create-video/upload-video) |
+| `POST https://open.douyin.com/toutiao/video/create/` | [官方发布视频文档](https://open.douyin.com/platform/resource/docs/openapi/video-management/toutiao/create-video/publish-video)；当前页面请求字段显示“暂无数据” |
+| `GET https://open.douyin.com/toutiao/video/list/` | [官方视频列表文档](https://open.douyin.com/platform/resource/docs/openapi/video-management/toutiao/search-video/account-video-list/)，分页字段参照[公开 SDK](https://github.com/leafisme/douyin_open/blob/master/docs/Api/ToutiaoVideoListApi.md) |
+| `POST https://open.douyin.com/toutiao/video/data/` | [官方特定视频数据文档](https://open.douyin.com/platform/resource/docs/openapi/video-management/toutiao/search-video/video-data/)；请求字段显示“暂无数据” |
+| 图文发布范围 | [官方头条内容发布接入方案](https://open.douyin.com/platform/resource/docs/ability/content-management/toutiao-publish-solution/)说明开放接口暂不支持头条文章、微头条 |
+
+创作者网页的 `/mp/agw/article/publish` 见[公开项目的协议记录](https://github.com/xc-2000/toutiao-auto-publisher/blob/main/README.md)，但本仓库没有当前账号的脱敏请求样本、安全参数和发布结果，因此没有封装或宣称可用。
+
+## 验证
 
 ```bash
-python main.py
+python -m unittest discover -s tests -v
+python -m compileall -q builder tou_tiao_api.py tou_tiao_creator_api.py main.py
 ```
 
-服务启动后访问 http://localhost:5000/docs 查看交互式 API 文档。
-
-### 🎨 Cookie 配置
-
-在浏览器中打开 [www.toutiao.com](https://www.toutiao.com)，**登录账号**后按 `F12` 打开开发者工具，点击「网络」→ 找任意一个 API 请求 → 复制请求头中的 `Cookie` 字段值。
-
-> ⚠️ 注意：必须登录后获取的 Cookie 才有效，`msToken`、`ttwid` 等字段缺失将导致接口鉴权失败。
-
-将获取到的 Cookie 字符串作为 `cookies_str` 参数传入接口，格式如下：
-
-```
-msToken=xxx; ttwid=xxx; tt_chain_token=xxx; ...
-```
-
-## 📡 接口说明
-
-### POST `/get_search_info`
-
-按关键词搜索今日头条内容，返回指定页的原始搜索结果。
-
-**请求参数**
-
-| 字段          | 类型  | 必填 | 说明                  |
-|-------------|-----|----|---------------------|
-| keyword     | str | 是  | 搜索关键词               |
-| page_num    | int | 是  | 页码，从 0 开始           |
-| cookies_str | str | 是  | 今日头条登录 Cookie 字符串   |
-
-**请求示例**
-
-```bash
-curl -X POST http://localhost:5000/get_search_info \
-  -H "Content-Type: application/json" \
-  -d '{
-    "keyword": "人工智能",
-    "page_num": 0,
-    "cookies_str": "msToken=xxx; ttwid=xxx"
-  }'
-```
-
-**响应示例**
-
-```json
-{
-  "code": 200,
-  "message": "成功",
-  "data": "<原始 HTML 字符串>"
-}
-```
-
----
-
-### POST `/get_user_info`
-
-获取今日头条用户主页信息。
-
-**请求参数**
-
-| 字段          | 类型  | 必填 | 说明                                          |
-|-------------|-----|----|---------------------------------------------|
-| user_url    | str | 是  | 用户主页 URL，如 `https://www.toutiao.com/c/user/token/MS4w.../` |
-| cookies_str | str | 是  | 今日头条登录 Cookie 字符串                           |
-
-**请求示例**
-
-```bash
-curl -X POST http://localhost:5000/get_user_info \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_url": "https://www.toutiao.com/c/user/token/MS4wLjABAAAA.../",
-    "cookies_str": "msToken=xxx; ttwid=xxx"
-  }'
-```
-
-**响应示例**
-
-```json
-{
-  "code": 200,
-  "message": "成功",
-  "data": {
-    "nickname": "用户昵称",
-    "avatar": "https://p3.toutiaoimg.com/...",
-    "user_id": "123456789",
-    "fans": 10000,
-    "digg_count": 5000,
-    "collect_time": "2026-04-11 12:00:00"
-  }
-}
-```
-
----
-
-### POST `/get_user_all_work`
-
-获取用户发布的全部作品（自动翻页），返回原始数据列表。
-
-**请求参数**
-
-| 字段          | 类型  | 必填 | 说明                        |
-|-------------|-----|----|---------------------------|
-| user_url    | str | 是  | 用户主页 URL                  |
-| cookies_str | str | 是  | 今日头条登录 Cookie 字符串         |
-
-**请求示例**
-
-```bash
-curl -X POST http://localhost:5000/get_user_all_work \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_url": "https://www.toutiao.com/c/user/token/MS4wLjABAAAA.../",
-    "cookies_str": "msToken=xxx; ttwid=xxx"
-  }'
-```
-
-**响应示例**
-
-```json
-{
-  "code": 200,
-  "message": "成功",
-  "data": [
-    {
-      "id": "7300000000000000000",
-      "title": "文章标题",
-      "publish_time": 1731643083,
-      "like_count": 100,
-      "comment_count": 20
-    }
-  ]
-}
-```
-
----
-
-### POST `/get_work_info`
-
-获取单篇作品的详细内容（支持图文与视频）。
-
-**请求参数**
-
-| 字段          | 类型  | 必填 | 说明                                                      |
-|-------------|-----|----|-----------------------------------------------------------|
-| work_url    | str | 是  | 作品 URL，如 `https://www.toutiao.com/article/xxx/` 或 `https://www.toutiao.com/video/xxx/` |
-| cookies_str | str | 是  | 今日头条登录 Cookie 字符串                                       |
-
-**请求示例**
-
-```bash
-curl -X POST http://localhost:5000/get_work_info \
-  -H "Content-Type: application/json" \
-  -d '{
-    "work_url": "https://www.toutiao.com/article/7300000000000000000/",
-    "cookies_str": "msToken=xxx; ttwid=xxx"
-  }'
-```
-
-**响应示例**
-
-```json
-{
-  "code": 200,
-  "message": "成功",
-  "data": {
-    "title": "文章标题",
-    "content": "正文内容...",
-    "images": ["https://p3.toutiaoimg.com/img1.jpg"],
-    "videos": ["https://v3.toutiaoimg.com/video1.mp4"]
-  }
-}
-```
-
----
-
-### POST `/get_video_url`
-
-解析视频 ID，返回可直接访问的 MP4 直链地址。
-
-**请求参数**
-
-| 字段          | 类型  | 必填 | 说明                    |
-|-------------|-----|----|------------------------|
-| video_id    | str | 是  | 视频 URI，从作品数据中的 `play_addr.uri` 字段获取 |
-| cookies_str | str | 是  | 今日头条登录 Cookie 字符串     |
-
-**请求示例**
-
-```bash
-curl -X POST http://localhost:5000/get_video_url \
-  -H "Content-Type: application/json" \
-  -d '{
-    "video_id": "v0d00fg10000cu9gobbc77u0s7d8i2b0",
-    "cookies_str": "msToken=xxx; ttwid=xxx"
-  }'
-```
-
-**响应示例**
-
-```json
-{
-  "code": 200,
-  "message": "成功",
-  "data": "https://v3.toutiaoimg.com/obj/tos-cn-ve-15/xxx.mp4"
-}
-```
-
-## 🐳 Docker 部署
-
-```bash
-docker build -t toutiao-platform .
-docker run -d -p 5000:5000 toutiao-platform
-```
-
-## 🍥 日志
-
-| 日期       | 说明                                          |
-|----------|---------------------------------------------|
-| 26/04/11 | 项目初始化，完成搜索、用户信息、用户作品、内容详情、视频直链 API 封装 |
-
-## 🤝 欢迎贡献 PR
-
-本项目欢迎任何形式的贡献！如果你有新功能想法、Bug 修复或文档改进，欢迎提交 PR。
-
-- Fork 本仓库并在新分支上开发
-- 保持代码风格与现有代码一致
-- PR 描述中请简要说明改动内容和目的
-- 也欢迎通过 Issue 提出建议或报告问题
-
-## 🧸 额外说明
-1. 感谢 star⭐ 和 follow📰！不时更新
-2. 作者的联系方式在主页里，有问题可以随时联系我
-3. 可以关注下作者的其他项目，欢迎 PR 和 issue
-4. 感谢赞助！如果此项目对您有帮助，请作者喝一杯奶茶~~ （开心一整天😊😊）
-5. thank you~~~
-
-
-## 🍔 交流群
-
-如果你对爬虫和 AI Agent 感兴趣，可以加入群聊一起讨论~
-
-ps: 请加群，人满或者过期 issue | wx 提醒 | qq提醒
-
-| group-1 | group-2 | group-3 | group-4 (2000人qq群) |
-|:--:|:--:|:--:|:--:|
-| <img width="280" alt="group1" src="https://cvcat.site/assets/group1.jpg" /> | <img width="280" alt="group2" src="https://cvcat.site/assets/group2.jpg" /> | <img width="280" alt="group3" src="https://cvcat.site/assets/group3.jpg" /> | <img width="280" alt="group3" src="https://cvcat.site/assets/group4.jpg" /> |
+测试使用假会话，不发送真实作品。匿名搜索首页已做只读实测；真实 OAuth、详情、上传与发布需要对应账号在受控环境逐项实测。搜索分页当前返回重复作品，不应据此宣称已实现可靠翻页。`.env` 已从版本追踪移除并忽略；使用 `.env.example` 查看变量名，不要提交 Cookie、Token 或 `client_secret`。
