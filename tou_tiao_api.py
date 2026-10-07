@@ -23,23 +23,19 @@ class TouTiaoApi:
         self.http = session or requests
 
     def search(self, keyword, page_num, auth, *, search_id=None):
-        """搜索作品，返回原始 HTML 与尽力提取的作品链接。
+        """搜索首页作品，返回原始 HTML 与尽力提取的作品链接。
 
-        搜索页可能改变 HTML 结构；调用方始终可使用 raw_html。
+        搜索页可能改变 HTML 结构；翻页请求在线返回了重复首页，暂不开放。
         """
         if not isinstance(keyword, str) or not keyword.strip():
             raise ValueError("keyword is required")
         if not isinstance(page_num, int) or page_num < 0:
             raise ValueError("page_num must be a non-negative integer")
-        if page_num and not search_id:
-            search_id = self.search(keyword, 0, auth)["search_id"]
-            if not search_id:
-                raise ValueError("search page did not provide a pagination search_id")
-        params = {"keyword": keyword, "pd": "synthesis", "page_num": page_num}
         if page_num:
-            params.update({"source": "pagination", "action_type": "pagination"})
-        if search_id:
-            params["search_id"] = search_id
+            raise NotImplementedError("search pagination is unverified; only page_num=0 is supported")
+        if search_id is not None:
+            raise ValueError("search_id is only for pagination, which is unverified")
+        params = {"keyword": keyword, "pd": "synthesis", "page_num": page_num}
         response = self.http.get(
             f"{self.base_url}/search",
             params=params,
@@ -70,7 +66,7 @@ class TouTiaoApi:
         return {
             "raw_html": response.text,
             "items": items,
-            "search_id": found_id.group(1) if found_id else search_id,
+            "search_id": found_id.group(1) if found_id else None,
         }
 
     def item(self, work_url, auth):

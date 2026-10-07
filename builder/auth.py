@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from urllib.parse import urlencode
 
 import requests
@@ -35,6 +36,15 @@ def read_open_api_data(response: requests.Response) -> dict:
     return data
 
 
+def _expiry_seconds(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    seconds = int(value)
+    if seconds < 0:
+        raise ValueError("OAuth expiry must be non-negative")
+    return seconds
+
+
 class TouTiaoAuth:
     """兼容旧 ``auth.cookie``，并承载 Creator Open API 的 token。"""
 
@@ -44,12 +54,26 @@ class TouTiaoAuth:
         *,
         access_token: str = "",
         open_id: str = "",
+        refresh_token: str = "",
+        expires_in: int | str | None = None,
+        refresh_expires_in: int | str | None = None,
+        scope: str = "",
         session: requests.Session | None = None,
     ):
         self.cookie: dict[str, str] = {}
         self.cookie_str = ""
         self.access_token = access_token
         self.open_id = open_id
+        self.refresh_token = refresh_token
+        self.expires_in = _expiry_seconds(expires_in)
+        self.refresh_expires_in = _expiry_seconds(refresh_expires_in)
+        self.scope = scope
+        issued_at = time.time()
+        self.expires_at = issued_at + self.expires_in if self.expires_in is not None else None
+        self.refresh_expires_at = (
+            issued_at + self.refresh_expires_in
+            if self.refresh_expires_in is not None else None
+        )
         self.session = session or requests.Session()
         self._owns_session = session is None
         if cookie_str:
@@ -141,7 +165,13 @@ class TouTiaoOAuth:
             )
             data = read_open_api_data(response)
             auth = TouTiaoAuth.from_access_token(
-                data["access_token"], data["open_id"], session=http
+                data["access_token"],
+                data["open_id"],
+                refresh_token=data.get("refresh_token") or "",
+                expires_in=data.get("expires_in"),
+                refresh_expires_in=data.get("refresh_expires_in"),
+                scope=data.get("scope") or "",
+                session=http,
             )
             auth._owns_session = owned
             return auth
@@ -149,3 +179,42 @@ class TouTiaoOAuth:
             if owned:
                 http.close()
             raise
+
+    @classmethod
+    def refresh_access_token(cls, client_key: str, auth: TouTiaoAuth) -> TouTiaoAuth:
+        """用头条 refresh_token 续期 access_token，并更新原会话。
+
+        头条不支持续期 refresh_token；它失效后需要重新取得用户授权。
+        """
+        if not client_key or not auth.refresh_token:
+            raise ValueError("client_key and refresh_token are required")
+        response = auth.session.post(
+            f"{cls.AUTH_BASE}/oauth/refresh_token/",
+            files={
+                "client_key": (None, client_key),
+                "grant_type": (None, "refresh_token"),
+                "refresh_token": (None, auth.refresh_token),
+            },
+            timeout=30,
+        )
+        data = read_open_api_data(response)
+        access_token = data.get("access_token")
+        open_id = data.get("open_id", auth.open_id)
+        if not access_token or open_id != auth.open_id:
+            raise ValueError("OAuth refresh returned no access_token or a different open_id")
+        expires_in = _expiry_seconds(data.get("expires_in"))
+        refresh_expires_in = _expiry_seconds(data.get("refresh_expires_in"))
+        refreshed_at = time.time()
+        auth.access_token = access_token
+        auth.refresh_token = data.get("refresh_token") or auth.refresh_token
+        auth.scope = data.get("scope") or auth.scope
+        auth.expires_in = expires_in
+        auth.expires_at = refreshed_at + expires_in if expires_in is not None else None
+        if refresh_expires_in is not None:
+            auth.refresh_expires_in = refresh_expires_in
+            reported_expiry = refreshed_at + refresh_expires_in
+            auth.refresh_expires_at = (
+                min(auth.refresh_expires_at, reported_expiry)
+                if auth.refresh_expires_at is not None else reported_expiry
+            )
+        return auth

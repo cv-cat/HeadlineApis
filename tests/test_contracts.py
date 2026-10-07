@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
+import requests
+
 from builder.auth import OpenApiError, TouTiaoAuth, TouTiaoOAuth
 from tou_tiao_api import TouTiaoApi
 from tou_tiao_creator_api import TouTiaoCreatorApi
@@ -56,14 +58,64 @@ class AuthContractTest(unittest.TestCase):
         self.assertEqual(parse_qs(parsed.query)["scope"], ["toutiao.video.create"])
 
         http = FakeSession(
-            [FakeResponse(json_data={"data": {"error_code": 0, "access_token": "token", "open_id": "user"}})]
+            [FakeResponse(json_data={"data": {
+                "error_code": 0, "access_token": "token", "open_id": "user",
+                "refresh_token": "refresh-one", "expires_in": "86400",
+                "refresh_expires_in": "2592000", "scope": "toutiao.video.create",
+            }})]
         )
         auth = TouTiaoOAuth.exchange_code("client", "secret", "code", session=http)
         self.assertEqual((auth.access_token, auth.open_id), ("token", "user"))
+        self.assertEqual(auth.refresh_token, "refresh-one")
+        self.assertEqual((auth.expires_in, auth.refresh_expires_in), (86400, 2592000))
+        self.assertEqual(auth.scope, "toutiao.video.create")
+        self.assertGreater(auth.expires_at, 0)
+        self.assertGreater(auth.refresh_expires_at, auth.expires_at)
         method, endpoint, kwargs = http.calls[0]
         self.assertEqual((method, endpoint), ("POST", "https://open.snssdk.com/oauth/access_token/"))
         self.assertEqual(kwargs["data"]["grant_type"], "authorization_code")
         self.assertEqual(kwargs["data"]["code"], "code")
+
+    def test_refresh_access_token_uses_toutiao_multipart_and_updates_session(self):
+        http = FakeSession([FakeResponse(json_data={"data": {
+            "error_code": 0, "access_token": "token-two", "open_id": "user",
+            "refresh_token": "refresh-one", "expires_in": "7200",
+            "refresh_expires_in": "2500000", "scope": "toutiao.video.create",
+        }})])
+        auth = TouTiaoAuth.from_access_token(
+            "token-one", "user", refresh_token="refresh-one",
+            expires_in=60, refresh_expires_in=2592000, session=http,
+        )
+        original_refresh_expiry = auth.refresh_expires_at
+        self.assertIs(TouTiaoOAuth.refresh_access_token("client", auth), auth)
+        self.assertEqual((auth.access_token, auth.refresh_token), ("token-two", "refresh-one"))
+        self.assertEqual((auth.expires_in, auth.refresh_expires_in), (7200, 2500000))
+        self.assertEqual(auth.scope, "toutiao.video.create")
+        self.assertGreater(auth.refresh_expires_at, auth.expires_at)
+        self.assertLessEqual(auth.refresh_expires_at, original_refresh_expiry)
+        method, endpoint, kwargs = http.calls[0]
+        self.assertEqual((method, endpoint), ("POST", "https://open.snssdk.com/oauth/refresh_token/"))
+        self.assertEqual(kwargs["files"], {
+            "client_key": (None, "client"),
+            "grant_type": (None, "refresh_token"),
+            "refresh_token": (None, "refresh-one"),
+        })
+        self.assertNotIn("data", kwargs)
+        self.assertNotIn("client_secret", kwargs["files"])
+        prepared = requests.Request(method, endpoint, files=kwargs["files"]).prepare()
+        self.assertTrue(prepared.headers["Content-Type"].startswith("multipart/form-data; boundary="))
+
+    def test_refresh_error_keeps_existing_credentials(self):
+        http = FakeSession([FakeResponse(json_data={"data": {"error_code": 10010}})])
+        auth = TouTiaoAuth.from_access_token(
+            "token-one", "user", refresh_token="refresh-one", session=http,
+        )
+        with self.assertRaises(OpenApiError):
+            TouTiaoOAuth.refresh_access_token("client", auth)
+        self.assertEqual((auth.access_token, auth.refresh_token), ("token-one", "refresh-one"))
+        with self.assertRaises(ValueError):
+            TouTiaoOAuth.refresh_access_token("", auth)
+        self.assertEqual(len(http.calls), 1)
 
 
 class ReadContractTest(unittest.TestCase):
@@ -81,13 +133,19 @@ class ReadContractTest(unittest.TestCase):
         self.assertEqual(kwargs["cookies"], {"ttwid": "abc"})
         self.assertNotIn("search_id", kwargs["params"])
 
-    def test_search_pagination_uses_fresh_search_id(self):
-        initial = '<script>search_id:"20261007131933E9F565D6E83B28AC64EE"</script>'
-        http = FakeSession([FakeResponse(text=initial), FakeResponse(text="page two")])
+    def test_search_pagination_fails_before_returning_duplicate_page(self):
+        http = FakeSession([])
         api = TouTiaoApi(session=http)
-        api.search("人工智能", 1, TouTiaoAuth())
-        self.assertEqual(http.calls[1][2]["params"]["search_id"], "20261007131933E9F565D6E83B28AC64EE")
-        self.assertEqual(http.calls[1][2]["params"]["source"], "pagination")
+        auth = TouTiaoAuth()
+        with self.assertRaisesRegex(NotImplementedError, "only page_num=0"):
+            api.search("人工智能", 1, auth)
+        with self.assertRaisesRegex(NotImplementedError, "only page_num=0"):
+            api.search("人工智能", 1, auth, search_id="old-id")
+        success, message, data = api.getSearchInfo("人工智能", 1, auth)
+        self.assertFalse(success)
+        self.assertIn("only page_num=0", message)
+        self.assertIsNone(data)
+        self.assertEqual(http.calls, [])
 
     def test_search_extracts_current_jump_link(self):
         target = "https://toutiao.com/group/123/"

@@ -7,8 +7,8 @@
 | 能力 | 入口 | 状态 |
 | --- | --- | --- |
 | Cookie 会话 | `TouTiaoAuth.from_cookie`、`prepare_auth` | 本地解析与契约测试通过；Cookie 是否有效需用户账号验证 |
-| 头条 OAuth 授权 | `TouTiaoOAuth.authorize_url`、`exchange_code` | 官方端点有文档，mock 请求测试通过；真实授权未验证 |
-| 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测返回 6 个头条作品链接；分页请求实测重复首页，分页能力待确认 |
+| 头条 OAuth 授权与续期 | `TouTiaoOAuth.authorize_url`、`exchange_code`、`refresh_access_token` | 官方端点有文档，mock 请求测试通过；真实授权未验证 |
+| 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测返回 6 个头条作品链接；当前只支持第 0 页，后续页明确报错，避免把重复首页当成翻页结果 |
 | Item 详情 | `TouTiaoApi.item`、旧 `get_work_info` | 接受 `https://www.toutiao.com/article/{id}/`、`video/{id}/`、`item/{id}/`、`group/{id}/`；解析契约测试通过，线上详情页面待验证 |
 | 用户页、作品列表、视频直链 | `TouTiaoApi` 原有方法 | 保留兼容入口；本轮没有账号级线上测试 |
 | 视频上传 | `TouTiaoCreatorApi.upload_video` | 官方端点和表单字段有文档，mock 请求测试通过；真实上传未验证 |
@@ -62,6 +62,9 @@ url = TouTiaoOAuth.authorize_url(
 )
 # 用户打开 url 授权；回调后校验 state，再将 code 交给服务端：
 auth = TouTiaoOAuth.exchange_code(client_key, client_secret, code)
+# 在服务端安全保存 auth.refresh_token、auth.expires_at、auth.refresh_expires_at 和 auth.scope。
+# access_token 到期或平台返回 token 失效时，可刷新原会话：
+TouTiaoOAuth.refresh_access_token(client_key, auth)
 creator = TouTiaoCreatorApi(auth)
 uploaded = creator.upload_video("clip.mp4")
 video_id = uploaded["video"]["video_id"]
@@ -71,6 +74,8 @@ videos = creator.list_videos(cursor=0, count=10)
 auth.close()
 ```
 
+头条刷新只针对 `access_token`：官方资料指出 `refresh_token` 不能续期，过期后须重新取得用户授权。刷新接口当前文档的参数表为空，仓库依照[官方 SDK 示例](https://open.douyin.com/platform/resource/docs/develop/guide/douyin-live-sdk/android)采用 `client_key`、`grant_type=refresh_token`、`refresh_token` 字段，以该接口文档指定的 multipart 表单发送；字段来自同平台示例，真实头条授权账号仍待验证。搜索页码大于 0 时 `search()` 抛出 `NotImplementedError`，旧 `getSearchInfo()` 返回 `(False, 错误说明, None)`。
+
 单文件上传限制为 128 MiB；更大的视频需要官方分片接口，本仓库暂未封装。`get_video_data(payload)` 会原样发送调用方给出的请求体；不要把未知字段当作已验证的 API 契约。
 
 ## 端点依据
@@ -79,6 +84,7 @@ auth.close()
 | --- | --- |
 | `GET https://so.toutiao.com/search`、`GET https://www.toutiao.com/article/{id}/` | 本仓库原有 `tou_tiao_api.py`，本轮保持兼容并加强输入与错误处理 |
 | `GET https://open.snssdk.com/oauth/authorize/`、`POST https://open.snssdk.com/oauth/access_token/` | [头条获取授权码](https://open.douyin.com/platform/resource/docs/openapi/account-permission/toutiao-get-permission-code)、[获取 access token](https://open.douyin.com/platform/resource/docs/openapi/account-permission/get-access-token) |
+| `POST https://open.snssdk.com/oauth/refresh_token/` | [官方刷新 access token 文档](https://open.douyin.com/platform/resource/docs/openapi/account-permission/refresh-access-token)、[头条帐号 OAuth 说明](https://open.douyin.com/platform/resource/docs/develop/permission/toutiao-or-xigua/OAuth2.0/) |
 | `POST https://open.douyin.com/toutiao/video/upload/` | [官方上传视频文档](https://open.douyin.com/platform/resource/docs/openapi/video-management/toutiao/create-video/upload-video) |
 | `POST https://open.douyin.com/toutiao/video/create/` | [官方发布视频文档](https://open.douyin.com/platform/resource/docs/openapi/video-management/toutiao/create-video/publish-video)；当前页面请求字段显示“暂无数据” |
 | `GET https://open.douyin.com/toutiao/video/list/` | [官方视频列表文档](https://open.douyin.com/platform/resource/docs/openapi/video-management/toutiao/search-video/account-video-list/)，分页字段参照[公开 SDK](https://github.com/leafisme/douyin_open/blob/master/docs/Api/ToutiaoVideoListApi.md) |
@@ -94,4 +100,4 @@ python -m unittest discover -s tests -v
 python -m compileall -q builder tou_tiao_api.py tou_tiao_creator_api.py main.py
 ```
 
-测试使用假会话，不发送真实作品。匿名搜索首页已做只读实测；真实 OAuth、详情、上传与发布需要对应账号在受控环境逐项实测。搜索分页当前返回重复作品，不应据此宣称已实现可靠翻页。`.env` 已从版本追踪移除并忽略；使用 `.env.example` 查看变量名，不要提交 Cookie、Token 或 `client_secret`。
+测试使用假会话，不发送真实作品。匿名搜索首页已做只读实测；真实 OAuth、详情、上传与发布需要对应账号在受控环境逐项实测。搜索分页在线返回重复作品，当前已禁止后续页请求。`.env` 已从版本追踪移除并忽略；使用 `.env.example` 查看变量名，不要提交 Cookie、Token 或 `client_secret`。
