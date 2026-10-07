@@ -91,14 +91,14 @@ class TouTiaoAuth:
         return cls(cookie_str, **kwargs)
 
     @classmethod
-    def from_browser_login(cls, timeout_seconds: int = 300) -> "TouTiaoAuth":
+    def from_browser_login(cls, timeout_seconds: int = 600) -> "TouTiaoAuth":
         """在独立可见的浏览器窗口登录，返回仅驻留内存的网页会话。"""
         from builder.browser_login import browser_login
 
         return browser_login(cls, timeout_seconds=timeout_seconds)
 
     @classmethod
-    def from_qrcode_login(cls, timeout_seconds: int = 300) -> "TouTiaoAuth":
+    def from_qrcode_login(cls, timeout_seconds: int = 600) -> "TouTiaoAuth":
         """兼容旧入口；浏览器页面也可选择手机验证码。"""
         return cls.from_browser_login(timeout_seconds=timeout_seconds)
 

@@ -8,6 +8,19 @@ from urllib.parse import urlsplit
 CREATOR_LOGIN_URL = "https://mp.toutiao.com/auth/page/login"
 CREATOR_HOME_URL = "https://mp.toutiao.com/profile_v4/"
 CREATOR_HOME_PATTERN = re.compile(r"^https://mp\.toutiao\.com/profile_v4(?:/|\?|$)")
+CREATOR_LOGIN_STATUS_PATH = "/mp/agw/media/user_login_status_api"
+LOGIN_STATUS_SCRIPT = """async () => {
+    const response = await fetch('/mp/agw/media/user_login_status_api', {
+        method: 'GET', credentials: 'same-origin'
+    });
+    if (!response.ok) return {http_ok: false};
+    const payload = await response.json();
+    return {
+        http_ok: true,
+        code: payload.code,
+        is_login: payload.data?.is_login === true
+    };
+}"""
 
 
 class BrowserLoginError(RuntimeError):
@@ -57,7 +70,7 @@ def _complete_browser_login(playwright, auth_class, timeout_seconds: int):
             page = context.new_page()
             page.goto(CREATOR_LOGIN_URL, wait_until="domcontentloaded")
             initial_cookies = context.cookies(CREATOR_HOME_URL)
-            print("请在新开的 Chromium 窗口选择扫码或手机验证码并完成登录；成功后进入创作者首页。")
+            print("请在新开的 Chromium 窗口选择扫码或手机验证码，按页面提示完成人机验证（如滑块）；成功后进入创作者首页。")
             page.wait_for_url(
                 CREATOR_HOME_PATTERN,
                 wait_until="domcontentloaded",
@@ -69,6 +82,14 @@ def _complete_browser_login(playwright, auth_class, timeout_seconds: int):
             page.wait_for_timeout(1500)  # 留出时间让前端执行登录态重定向。
             if not _is_creator_home(page.url):
                 raise BrowserLoginError("Creator homepage redirected away after browser login")
+            # 页面自己也请求此只读登录态接口；只取布尔值，不读取用户资料。
+            status = page.evaluate(LOGIN_STATUS_SCRIPT)
+            if not isinstance(status, dict) or (
+                status.get("http_ok") is not True
+                or str(status.get("code")) != "0"
+                or status.get("is_login") is not True
+            ):
+                raise BrowserLoginError("Creator login status is not authenticated")
             creator_cookies = context.cookies(CREATOR_HOME_URL)
             before = {_cookie_identity(cookie) for cookie in initial_cookies}
             after = {_cookie_identity(cookie) for cookie in creator_cookies}
@@ -87,7 +108,7 @@ def _complete_browser_login(playwright, auth_class, timeout_seconds: int):
         browser.close()
 
 
-def browser_login(auth_class, *, timeout_seconds: int = 300):
+def browser_login(auth_class, *, timeout_seconds: int = 600):
     """启动新 Chromium；用户在官方网页自行选择扫码或手机验证码。"""
     if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be a positive integer")
@@ -105,6 +126,6 @@ def browser_login(auth_class, *, timeout_seconds: int = 300):
             raise BrowserLoginError("Browser login or Creator homepage timed out") from None
 
 
-def browser_qrcode_login(auth_class, *, timeout_seconds: int = 300):
+def browser_qrcode_login(auth_class, *, timeout_seconds: int = 600):
     """兼容旧辅助函数；浏览器页面也可选择手机验证码。"""
     return browser_login(auth_class, timeout_seconds=timeout_seconds)

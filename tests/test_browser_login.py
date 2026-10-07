@@ -7,6 +7,7 @@ from builder.browser_login import (
     CREATOR_HOME_URL,
     CREATOR_HOME_PATTERN,
     CREATOR_LOGIN_URL,
+    CREATOR_LOGIN_STATUS_PATH,
     _complete_browser_login,
     _is_creator_home,
     browser_qrcode_login,
@@ -18,13 +19,15 @@ def cookie(name, value, domain=".toutiao.com", path="/"):
 
 
 class FakePage:
-    def __init__(self, *, final_url=CREATOR_HOME_URL, wait_error=None):
+    def __init__(self, *, final_url=CREATOR_HOME_URL, wait_error=None, login_status=None):
         self.url = "about:blank"
         self.final_url = final_url
         self.wait_error = wait_error
         self.navigations = []
         self.wait_args = None
         self.pause_ms = None
+        self.login_status = login_status or {"http_ok": True, "code": 0, "is_login": True}
+        self.evaluated_script = ""
 
     def goto(self, url, **kwargs):
         self.navigations.append((url, kwargs))
@@ -38,6 +41,10 @@ class FakePage:
 
     def wait_for_timeout(self, timeout_ms):
         self.pause_ms = timeout_ms
+
+    def evaluate(self, script):
+        self.evaluated_script = script
+        return self.login_status
 
 
 class FakeContext:
@@ -88,8 +95,11 @@ class FakePlaywright:
         self.chromium = chromium
 
 
-def workflow(*, final_url=CREATOR_HOME_URL, before=None, after=None, wait_error=None):
-    page = FakePage(final_url=final_url, wait_error=wait_error)
+def workflow(*, final_url=CREATOR_HOME_URL, before=None, after=None,
+             wait_error=None, login_status=None):
+    page = FakePage(
+        final_url=final_url, wait_error=wait_error, login_status=login_status
+    )
     context = FakeContext(page, before or [], after or [])
     browser = FakeBrowser(context)
     chromium = FakeChromium(browser)
@@ -108,6 +118,7 @@ class BrowserLoginTest(unittest.TestCase):
             auth = _complete_browser_login(playwright, TouTiaoAuth, 120)
         self.assertIn("扫码", prompt.call_args.args[0])
         self.assertIn("手机验证码", prompt.call_args.args[0])
+        self.assertIn("滑块", prompt.call_args.args[0])
         self.assertEqual(playwright.chromium.launch_args, {"headless": False})
         self.assertEqual(browser.context_calls, 1)
         self.assertTrue(browser.closed and context.closed)
@@ -118,6 +129,7 @@ class BrowserLoginTest(unittest.TestCase):
             {"wait_until": "domcontentloaded", "timeout": 120000},
         ))
         self.assertEqual(page.pause_ms, 1500)
+        self.assertIn(CREATOR_LOGIN_STATUS_PATH, page.evaluated_script)
         self.assertEqual(context.cookie_calls, [CREATOR_HOME_URL, CREATOR_HOME_URL])
         self.assertTrue(auth.creator_login_verified)
         self.assertEqual(auth.creator_cookie["creator"], "three")
@@ -149,6 +161,16 @@ class BrowserLoginTest(unittest.TestCase):
             _complete_browser_login(playwright, TouTiaoAuth, 5)
         self.assertTrue(browser.closed and context.closed)
 
+    def test_rejects_browser_cookie_when_status_api_says_logged_out(self):
+        final = [cookie("creator", "three", domain="mp.toutiao.com")]
+        playwright, browser, context, _ = workflow(
+            after=final,
+            login_status={"http_ok": True, "code": 0, "is_login": False},
+        )
+        with patch("builtins.print"), self.assertRaises(BrowserLoginError):
+            _complete_browser_login(playwright, TouTiaoAuth, 5)
+        self.assertTrue(browser.closed and context.closed)
+
     def test_creator_route_requires_exact_https_host(self):
         self.assertTrue(_is_creator_home("https://mp.toutiao.com/profile_v4/"))
         self.assertFalse(_is_creator_home("https://evil.test/profile_v4/"))
@@ -160,9 +182,11 @@ class BrowserLoginTest(unittest.TestCase):
     def test_generic_and_legacy_auth_entries_share_browser_flow(self):
         instance = TouTiaoAuth()
         with patch("builder.browser_login.browser_login", return_value=instance) as login:
+            self.assertIs(TouTiaoAuth.from_browser_login(), instance)
             self.assertIs(TouTiaoAuth.from_browser_login(timeout_seconds=45), instance)
             self.assertIs(TouTiaoAuth.from_qrcode_login(timeout_seconds=60), instance)
         self.assertEqual(login.call_args_list, [
+            call(TouTiaoAuth, timeout_seconds=600),
             call(TouTiaoAuth, timeout_seconds=45),
             call(TouTiaoAuth, timeout_seconds=60),
         ])

@@ -7,7 +7,8 @@
 | 能力 | 入口 | 状态 |
 | --- | --- | --- |
 | Cookie 会话 | `TouTiaoAuth.from_cookie`、`prepare_auth` | 复用已有网页 Cookie 进行读取，本地解析与契约测试通过；实际 Cookie 有效性需本人账号验证 |
-| 可见浏览器登录 | `TouTiaoAuth.from_browser_login`；旧名 `from_qrcode_login` 保留 | 独立 Chromium 打开头条创作者登录页，在官方页面选择二维码或手机验证码；登录后只读访问创作者首页并检查新 Cookie。本地假浏览器契约测试通过，真实账号流程待验证 |
+| 可见浏览器登录 | `TouTiaoAuth.from_browser_login`；旧名 `from_qrcode_login` 保留 | 独立 Chromium 打开头条创作者登录页，在官方页面选择二维码或手机验证码；登录后只读检查创作者首页、新 Cookie 与登录状态接口。本地假浏览器契约测试通过，真实辅助流程待验证 |
+| 头条号网页只读 API | `TouTiaoCreatorWebApi.is_logged_in`、`has_account_auth`、`list_drafts` | 本人已登录页面观察到实际 GET 与成功响应；匿名 Python GET 登录状态也返回预期结构。Python Cookie 客户端通过契约测试，真实账号在 Python 中待验证 |
 | 头条 OAuth 授权与续期 | `TouTiaoOAuth.authorize_url`、`exchange_code`、`refresh_access_token` | 官方端点有文档，mock 请求测试通过；真实授权未验证 |
 | 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测返回 6 个头条作品链接；当前只支持第 0 页，后续页明确报错，避免把重复首页当成翻页结果 |
 | Item 详情 | `TouTiaoApi.item`、旧 `get_work_info` | 接受 `https://www.toutiao.com/article/{id}/`、`video/{id}/`、`item/{id}/`、`group/{id}/`；解析契约测试通过，线上详情页面待验证 |
@@ -52,7 +53,7 @@ with TouTiaoAuth.from_cookie(cookie_str) as auth:
 
 ### 创作者网页登录：二维码或手机验证码
 
-此入口使用 Playwright 启动**新的可见 Chromium 与独立临时上下文**。在弹出的官方登录页选择今日头条 App 扫码，或在该页输入本人手机号与短信验证码。完成登录后等待网页进入 `https://mp.toutiao.com/profile_v4/`；若平台没有自动跳转，可在该窗口手动打开这个地址。程序随后再次只读访问该地址，确认未跳回登录页，并检查新 Cookie。手机号和验证码只输入官方页面，仓库代码不接收这些值。该入口不连接当前 Chrome、不读取已有浏览器配置、不保存 Cookie 到磁盘，也不调用猜测的登录 HTTP 接口。隔离上下文与按 URL 读取 Cookie 的行为见 [Playwright BrowserContext 文档](https://playwright.dev/python/docs/api/class-browsercontext)。
+此入口使用 Playwright 启动**新的可见 Chromium 与独立临时上下文**。在弹出的官方登录页选择今日头条 App 扫码，或在该页输入本人手机号与短信验证码；若官方页面出现滑块等人机验证，按页面提示自行完成。默认等待 600 秒，可通过 `timeout_seconds` 调整。完成登录后等待网页进入 `https://mp.toutiao.com/profile_v4/`；若平台没有自动跳转，可在该窗口手动打开这个地址。程序随后再次只读访问该地址，确认未跳回登录页，检查新 Cookie，并调用页面已观察到的只读 `user_login_status_api`，要求 `data.is_login=true`。手机号和验证码只输入官方页面，仓库代码不接收这些值。该入口不连接当前 Chrome、不读取已有浏览器配置、不保存 Cookie 到磁盘，也不模拟滑块或猜测登录 HTTP 接口。隔离上下文与按 URL 读取 Cookie 的行为见 [Playwright BrowserContext 文档](https://playwright.dev/python/docs/api/class-browsercontext)。
 
 ```bash
 pip install -r requirements-browser.txt
@@ -62,7 +63,7 @@ python -m playwright install chromium
 ```python
 from builder.auth import TouTiaoAuth
 
-with TouTiaoAuth.from_browser_login(timeout_seconds=300) as auth:
+with TouTiaoAuth.from_browser_login(timeout_seconds=600) as auth:
     assert auth.creator_login_verified
     # auth.creator_cookie / creator_cookie_str 只在当前进程内，适用于 mp.toutiao.com。
     # auth.cookie 只含可用于 toutiao.com 子域的共享 Cookie，可能为空。
@@ -70,7 +71,24 @@ with TouTiaoAuth.from_browser_login(timeout_seconds=300) as auth:
     print("创作者网页会话已完成只读核验")
 ```
 
-旧的 `TouTiaoAuth.from_qrcode_login()` 是兼容别名，打开同一官方页面，仍可选择手机验证码。这项核验依据创作者首页的最终 URL 与登录前后的 Cookie 变化。它尚未在本人账号上实测，不能证明私有发布接口可用，也不生成 `open_id` 或 Creator Open API 的 OAuth token。浏览器关闭后，会话对象仍在当前 Python 进程内；进程结束即消失。`main.py` 保持只读环境变量入口，不会把登录结果输出成 Cookie 字符串。
+旧的 `TouTiaoAuth.from_qrcode_login()` 是兼容别名，打开同一官方页面，仍可选择手机验证码。这项核验依据创作者首页的最终 URL、登录前后的 Cookie 变化和只读登录状态接口。浏览器辅助流程尚未在本人账号上端到端实测，不能证明私有发布接口可用，也不生成 `open_id` 或 Creator Open API 的 OAuth token。浏览器关闭后，会话对象仍在当前 Python 进程内；进程结束即消失。`main.py` 保持只读环境变量入口，不会把登录结果输出成 Cookie 字符串。
+
+### 头条号网页只读 API
+
+已登录头条号页面实际发起 `user_login_status_api`、`check_user_auth`、`draft_list` 三个 GET。`draft_list` 的 `type=0&count=20` 在本人网页会话中返回 `code=0` 与数组；同源只读请求验证省略页面请求中的 `app_id` 后仍成功。下面的 Python 客户端复用 `auth.creator_cookie`，只访问 `mp.toutiao.com`，不使用 Open API 的 `access_token`。返回的草稿可能包含本人作品内容，不要打印、提交或共享原始响应。
+
+```python
+from builder.auth import TouTiaoAuth
+from tou_tiao_creator_web_api import TouTiaoCreatorWebApi
+
+with TouTiaoAuth.from_browser_login() as auth:
+    web = TouTiaoCreatorWebApi(auth)
+    assert web.is_logged_in()
+    account_info_complete = web.has_account_auth()
+    drafts = web.list_drafts(count=20)  # 只在内存使用，不输出作品内容
+```
+
+`has_account_auth()` 只反映网页的账号资料标志，不是最终发文许可。本次账号的创作中心提示完善资料以解锁文章/视频权益，`check_user_auth` 返回 `has_auth=false`；点击“立即完善”进入账号类型选择页，需要本人选择适用类型并完成后续资料。编辑器可以打开，但未填稿、未提交发布，因此当前账号的发布能力没有验收。上述网页 Cookie 也不能替代 Creator Open API OAuth 授权。
 
 ## OAuth 与视频 Creator
 
@@ -128,6 +146,9 @@ auth.close()
 | 端点 | 证据 |
 | --- | --- |
 | `GET https://so.toutiao.com/search`、`GET https://www.toutiao.com/article/{id}/` | 本仓库原有 `tou_tiao_api.py`，本轮保持兼容并加强输入与错误处理 |
+| `GET https://mp.toutiao.com/mp/agw/media/user_login_status_api` | 本人已登录头条号页面网络请求：`code=0`、`data.is_login=true`；匿名 Python GET 返回 `data.is_login=false` |
+| `GET https://mp.toutiao.com/mp/agw/media/check_user_auth` | 本人头条号文章编辑器页面实际请求，返回 `code=0`、`has_auth=false`；仅用于账号资料状态 |
+| `GET https://mp.toutiao.com/mp/agw/creator_center/draft_list?type=0&count=20` | 本人头条号草稿页实际请求与同源只读重试：`code=0`、`draft_list` 数组；未保存或输出草稿内容 |
 | `GET https://open.snssdk.com/oauth/authorize/`、`POST https://open.snssdk.com/oauth/access_token/` | [头条获取授权码](https://open.douyin.com/platform/resource/docs/openapi/account-permission/toutiao-get-permission-code)、[获取 access token](https://open.douyin.com/platform/resource/docs/openapi/account-permission/get-access-token) |
 | `POST https://open.snssdk.com/oauth/refresh_token/` | [官方刷新 access token 文档](https://open.douyin.com/platform/resource/docs/openapi/account-permission/refresh-access-token)、[头条帐号 OAuth 说明](https://open.douyin.com/platform/resource/docs/develop/permission/toutiao-or-xigua/OAuth2.0/) |
 | `POST https://open.douyin.com/toutiao/video/upload/` | [官方上传视频文档](https://open.douyin.com/platform/resource/docs/openapi/video-management/toutiao/create-video/upload-video) |
@@ -145,4 +166,4 @@ python -m unittest discover -s tests -v
 python -m compileall -q builder tou_tiao_api.py tou_tiao_creator_api.py main.py
 ```
 
-测试使用假会话和假浏览器，不发送真实作品。匿名搜索首页已做只读实测；真实网页登录、OAuth、详情、上传与发布需要对应账号在受控环境逐项实测。搜索分页在线返回重复作品，当前已禁止后续页请求。`.env` 已从版本追踪移除并忽略；使用 `.env.example` 查看变量名，不要提交 Cookie、Token 或 `client_secret`。
+测试使用假会话和假浏览器，不发送真实作品。匿名搜索首页与网页登录状态已做只读实测；真实 Python Cookie 会话、OAuth、详情、上传与发布需要对应账号在受控环境逐项实测。搜索分页在线返回重复作品，当前已禁止后续页请求。`.env` 已从版本追踪移除并忽略；使用 `.env.example` 查看变量名，不要提交 Cookie、Token 或 `client_secret`。
