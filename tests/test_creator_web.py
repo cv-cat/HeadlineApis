@@ -33,6 +33,26 @@ class FakeSession:
 
 
 class CreatorWebApiTest(unittest.TestCase):
+    def test_from_cookie_seeds_creator_web_session(self):
+        session = FakeSession([
+            FakeResponse({"code": 0, "data": {"is_login": True}}),
+            FakeResponse({"code": 0, "draft_list": []}),
+        ])
+        auth = TouTiaoAuth.from_cookie(
+            "creator_session=web-secret;ttwid=shared", session=session
+        )
+        api = TouTiaoCreatorWebApi(auth)
+        self.assertTrue(api.is_logged_in())
+        self.assertEqual(api.list_drafts(), [])
+        for _, kwargs in session.calls:
+            self.assertEqual(
+                kwargs["cookies"],
+                {"creator_session": "web-secret", "ttwid": "shared"},
+            )
+        self.assertEqual(auth.cookie, {"creator_session": "web-secret", "ttwid": "shared"})
+        self.assertEqual(auth.creator_cookie, auth.cookie)
+        self.assertEqual((auth.access_token, auth.open_id), ("", ""))
+
     def test_read_only_status_permission_and_drafts_use_creator_cookie(self):
         session = FakeSession([
             FakeResponse({"code": 0, "data": {"is_login": True, "user": {"secret": "x"}}}),

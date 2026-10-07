@@ -49,8 +49,15 @@ class AuthContractTest(unittest.TestCase):
     def test_cookie_constructor_and_legacy_alias(self):
         auth = TouTiaoAuth.from_cookie("msToken=a=b;ttwid=two")
         self.assertEqual(auth.cookie, {"msToken": "a=b", "ttwid": "two"})
+        self.assertEqual(auth.creator_cookie, {"msToken": "a=b", "ttwid": "two"})
+        self.assertEqual(auth.creator_cookie_str, "msToken=a=b;ttwid=two")
+        self.assertFalse(auth.creator_login_verified)
+        self.assertEqual((auth.access_token, auth.open_id), ("", ""))
         self.assertIs(auth.perepare_auth("x=1"), auth)
         self.assertEqual(auth.cookie, {"x": "1"})
+        # The legacy shared-cookie mutator does not discard the imported
+        # creator session; callers can still use the same auth for web APIs.
+        self.assertEqual(auth.creator_cookie, {"msToken": "a=b", "ttwid": "two"})
         auth.close()
         combined = TouTiaoAuth.from_access_token(
             "access", "open-id", cookie_str="ttwid=web-cookie", session=FakeSession([])

@@ -86,9 +86,20 @@ class TouTiaoAuth:
 
     @classmethod
     def from_cookie(cls, cookie_str: str, **kwargs) -> "TouTiaoAuth":
+        """Build a web-session auth object from a caller-supplied Cookie header.
+
+        A Cookie copied from an ``mp.toutiao.com`` request is valid for both
+        the creator web endpoints and the shared read-only collection
+        endpoints.  Keep the two views separate internally, but seed both
+        from the same caller-owned string.  This does not create or imply an
+        Open API OAuth credential; ``access_token`` and ``open_id`` remain
+        empty unless the caller supplied them through another factory.
+        """
         if not cookie_str or not cookie_str.strip():
             raise ValueError("cookie_str is required")
-        return cls(cookie_str, **kwargs)
+        auth = cls(cookie_str, **kwargs)
+        auth.prepare_creator_auth(cookie_str)
+        return auth
 
     @classmethod
     def from_qrcode_login(

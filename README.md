@@ -51,6 +51,13 @@ with TouTiaoAuth.from_cookie(cookie_str) as auth:
     legacy = api.getSearchInfo("人工智能", 0, auth)  # (success, msg, HTML)
 ```
 
+`TouTiaoAuth.from_cookie()` 的参数是调用方自己从 `mp.toutiao.com` 同源请求
+`Request Headers > Cookie` 复制的完整 Cookie 字符串。导入后同一份 Cookie 会同时
+保存在 `auth.cookie`（共享读取请求）和 `auth.creator_cookie`（头条号网页请求），
+因此可以直接交给 `TouTiaoCreatorWebApi(auth)` 读取登录状态与草稿。该工厂只导入
+网页会话，不会把 Cookie 当成 Creator Open API 的 OAuth 凭据；`access_token` 和
+`open_id` 仍为空。Cookie 只在当前 Python 进程内使用，库不会读取或保存浏览器配置。
+
 ### 搜索到详情
 
 搜索页可能返回 `/group/{id}/`，而该地址现在只返回空壳。`item()` 会用同一 ID 的文章路径读取；纯 HTTP 会话在首次作品请求前调用公开 ttwid 注册与回调接口，随后只跟随头条同站重定向。最终页面的 `VideoObject`、`RENDER_DATA` 由 Python 解析，遇到未包含 JSON-LD 的响应会直接报告协议变化，不启动脚本渲染器。
@@ -67,7 +74,11 @@ assert item["title"] and item["content"]
 
 `item["videos"]` 只放页面明确给出的单文件 `contentUrl`。当前视频页的播放器使用 `blob:` 地址，旧 `get_video_url(video_id)` 对实测视频返回空 `video_list`；不能把 `blob:` 当成下载地址。`item["media_streams"]` 从页面 `RENDER_DATA` 提取独立视频和音频流，URL 可能过期，使用时需自行选择画质并合流；仓库尚未实现成品视频文件下载。
 
-随后用纯 HTTP `requests.Session` 验收同一 Python 对象的登录态读取与采集链路：创作者 Cookie 只放入 `auth.creator_cookie`，公开作品请求自动完成 ttwid 注册；同一会话的 `search("咖啡", 0)` 返回作品链接，首条进入 `item()` 得到视频页、非空标题/简介、封面和分离音视频流。Cookie 只在当前进程内使用，没有输出或落盘。
+随后用纯 HTTP `requests.Session` 验收同一 Python 对象的登录态读取与采集链路：从
+`from_cookie()` 导入的完整 Cookie 同时供网页端点和公开作品请求使用，公开请求仍会
+自动完成 ttwid 注册；同一会话的 `search("咖啡", 0)` 返回作品链接，首条进入
+`item()` 得到视频页、非空标题/简介、封面和分离音视频流。Cookie 只在当前进程内使用，
+没有输出或落盘。
 
 ### 创作者登录：纯 HTTP 二维码或短信验证码
 
