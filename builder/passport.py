@@ -65,11 +65,13 @@ class TouTiaoPassport:
 
     BASE_URL = "https://sso.toutiao.com"
     AID = 1231
+    UI_VERSION = "3.3.2"
     SDK_VERSION = "2.2.6"
+    LANGUAGE = "zh"
     LOGIN_SERVICE = "https://mp.toutiao.com/profile_v4/"
     USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36"
     )
 
     def __init__(
@@ -78,6 +80,10 @@ class TouTiaoPassport:
         *,
         service: str = LOGIN_SERVICE,
         fingerprint: str = "",
+        csrf_token: str = "",
+        ui_version: str = UI_VERSION,
+        language: str = LANGUAGE,
+        user_agent: str | None = None,
     ):
         if not isinstance(service, str) or not service:
             raise ValueError("service is required")
@@ -87,6 +93,10 @@ class TouTiaoPassport:
         self.session = session or requests.Session()
         self.service = service
         self.fingerprint = fingerprint
+        self.csrf_token = csrf_token
+        self.ui_version = ui_version
+        self.language = language
+        self.user_agent = user_agent or self.USER_AGENT
         self._owns_session = session is None
 
     def close(self) -> None:
@@ -99,25 +109,102 @@ class TouTiaoPassport:
     def __exit__(self, *_exc) -> None:
         self.close()
 
+    def _cookie(self, *names: str, preferred_domain: str = "") -> str:
+        """Read a value from either a requests CookieJar or a test mapping.
+
+        The login SDK obtains ``s_v_web_id`` and the CSRF token from cookies at
+        request time.  Looking them up lazily is important because the first
+        QR request sets ``passport_csrf_token`` on the same session.
+        """
+        wanted = {name for name in names}
+        cookies = getattr(self.session, "cookies", ())
+        records: list[tuple[str, str, str, int]] = []
+
+        # RequestsCookieJar is also a Mapping, but its mapping view loses the
+        # domain when the same cookie name exists on multiple hosts.  Iterate
+        # the Cookie objects first so mp.toutiao.com wins for s_v_web_id.
+        if isinstance(cookies, Mapping) and not hasattr(cookies, "_cookies"):
+            for index, (name, value) in enumerate(cookies.items()):
+                if name in wanted:
+                    records.append((name, str(value), "", index))
+        else:
+            try:
+                iterator = iter(cookies)
+            except TypeError:
+                iterator = iter(())
+            for index, item in enumerate(iterator):
+                name = getattr(item, "name", None)
+                value = getattr(item, "value", None)
+                domain = getattr(item, "domain", "") or ""
+                if name in wanted and value is not None:
+                    records.append((str(name), str(value), str(domain), index))
+
+        if not records:
+            return ""
+        preferred = preferred_domain.lower().lstrip(".")
+
+        def rank(record: tuple[str, str, str, int]) -> tuple[int, int]:
+            domain = record[2].lower().lstrip(".")
+            if preferred and (domain == preferred or domain.endswith("." + preferred)):
+                return (0, record[3])
+            return (1, record[3])
+
+        records.sort(key=rank)
+        return records[0][1]
+
+    def _fingerprint(self) -> str:
+        """Return the SDK FP, preferring an explicit value then ``s_v_web_id``.
+
+        ``login0.js`` shows that the SDK's FP provider returns this cookie
+        verbatim; it does not hash or re-encode it.  An empty value is retained
+        when a fresh requests session has not received the cookie yet.
+        """
+        if self.fingerprint:
+            return self.fingerprint
+        return self._cookie("s_v_web_id", preferred_domain="mp.toutiao.com")
+
+    def _csrf(self) -> str:
+        if self.csrf_token:
+            return self.csrf_token
+        return self._cookie("passport_csrf_token", "passport_csrf_token_default")
+
     @property
     def _headers(self) -> dict[str, str]:
+        # These are the SDK/browser request headers observed on the SSO XHR.
+        # requests supplies Cookie and Accept-Encoding from the session.  The
+        # Sec-CH/Sec-Fetch values are stable for the captured desktop profile;
+        # callers can override the UA when using another browser profile.
         return {
-            "User-Agent": self.USER_AGENT,
-            "Referer": "https://mp.toutiao.com/auth/page/login",
+            "Accept": "application/json, text/javascript",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Cache-Control": "no-cache",
+            "Content-Type": "application/x-www-form-urlencoded",
             "Origin": "https://mp.toutiao.com",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "X-Requested-With": "XMLHttpRequest",
+            "Pragma": "no-cache",
+            "Priority": "u=1, i",
+            "Referer": "https://mp.toutiao.com/",
+            "sec-ch-ua": '"Chromium";v="154", "Google Chrome";v="154", "Not A(Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
+            "User-Agent": self.user_agent,
+            "x-tt-passport-csrf-token": self._csrf(),
         }
 
     def _common_params(self) -> dict[str, str | int]:
-        # 这些字段来自登录页 Account SDK 的 SSO 初始化；fp/verifyFp
-        # 在无挑战时可以为空，平台需要时会在响应中返回校验挑战。
+        fingerprint = self._fingerprint()
+        # Keep insertion order identical to SsoInterfaceSdk.  The browser
+        # sends service/operation fields first, followed by this common block.
         return {
+            "ui_version": self.ui_version,
             "aid": self.AID,
             "account_sdk_source": "sso",
             "sdk_version": self.SDK_VERSION,
-            "fp": self.fingerprint,
-            "verifyFp": self.fingerprint,
+            "language": self.language,
+            "verifyFp": fingerprint,
+            "fp": fingerprint,
         }
 
     @staticmethod
@@ -151,9 +238,13 @@ class TouTiaoPassport:
         raise PassportError(code, _safe_description(payload))
 
     def _get(self, path: str, *, params: Mapping[str, object] | None = None) -> dict:
-        query = self._common_params()
+        # JS object spread puts operation parameters before the SDK common
+        # parameters.  This also preserves duplicate-free wire order in
+        # requests' prepared URL.
+        query: dict[str, object] = {}
         if params:
             query.update(params)
+        query.update(self._common_params())
         return self._unwrap(self._payload(self.session.get(
             f"{self.BASE_URL}{path}",
             params=query,
@@ -169,7 +260,7 @@ class TouTiaoPassport:
             f"{self.BASE_URL}{path}",
             params=self._common_params(),
             data=dict(data),
-            headers={**self._headers, "Content-Type": "application/x-www-form-urlencoded"},
+            headers=self._headers,
             timeout=30,
         )))
 

@@ -2,6 +2,7 @@ import base64
 import unittest
 from unittest.mock import patch
 
+import requests
 from requests.cookies import create_cookie
 
 from builder.auth import TouTiaoAuth
@@ -38,6 +39,51 @@ class Session:
 
 
 class PassportContractTest(unittest.TestCase):
+    def test_browser_wire_contract_uses_cookie_fp_csrf_and_order(self):
+        image = "data:image/png;base64," + base64.b64encode(b"png").decode()
+        session = Session([
+            Response({"message": "success", "error_code": 0,
+                      "data": {"token": "token", "qrcode": image}}),
+        ])
+        jar = requests.cookies.RequestsCookieJar()
+        # Keep both domains to prove the mp.toutiao.com cookie is preferred.
+        jar.set("s_v_web_id", "shared-fingerprint", domain=".toutiao.com")
+        jar.set("s_v_web_id", "mp-fingerprint", domain="mp.toutiao.com")
+        jar.set("passport_csrf_token", "csrf-token", domain=".toutiao.com")
+        session.cookies = jar
+
+        passport = TouTiaoPassport(session)
+        passport.get_qrcode()
+        kwargs = session.calls[0][2]
+        self.assertEqual(list(kwargs["params"]), [
+            "service", "need_logo", "ui_version", "aid", "account_sdk_source",
+            "sdk_version", "language", "verifyFp", "fp",
+        ])
+        self.assertEqual(kwargs["params"]["verifyFp"], "mp-fingerprint")
+        self.assertEqual(kwargs["params"]["fp"], "mp-fingerprint")
+        self.assertEqual(kwargs["headers"]["x-tt-passport-csrf-token"], "csrf-token")
+        self.assertEqual(kwargs["headers"]["Accept"], "application/json, text/javascript")
+        self.assertEqual(kwargs["headers"]["Referer"], "https://mp.toutiao.com/")
+        self.assertNotIn("X-Requested-With", kwargs["headers"])
+
+        prepared = requests.Request(
+            "GET", session.calls[0][1], params=kwargs["params"], headers=kwargs["headers"]
+        ).prepare()
+        self.assertEqual(
+            list(dict(pair.split("=", 1) for pair in prepared.url.split("?", 1)[1].split("&")).keys()),
+            list(kwargs["params"]),
+        )
+
+    def test_explicit_fingerprint_overrides_session_cookie(self):
+        session = Session([Response({"message": "success", "error_code": 0,
+                                     "data": {"status": "1"}})])
+        session.cookies = [create_cookie("s_v_web_id", "cookie-fingerprint", domain="mp.toutiao.com")]
+        passport = TouTiaoPassport(session, fingerprint="explicit-fingerprint")
+        passport.check_qrcode("token")
+        params = session.calls[0][2]["params"]
+        self.assertEqual(params["verifyFp"], "explicit-fingerprint")
+        self.assertEqual(params["fp"], "explicit-fingerprint")
+
     def test_qrcode_and_status_are_pure_http(self):
         image = "data:image/png;base64," + base64.b64encode(b"png").decode()
         session = Session([

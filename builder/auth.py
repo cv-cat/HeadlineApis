@@ -99,6 +99,9 @@ class TouTiaoAuth:
         service: str = "https://mp.toutiao.com/profile_v4/",
         on_qrcode=None,
         session: requests.Session | None = None,
+        fingerprint: str = "",
+        csrf_token: str = "",
+        user_agent: str | None = None,
     ) -> "TouTiaoAuth":
         """用纯 HTTP 获取二维码并轮询登录状态。
 
@@ -109,7 +112,13 @@ class TouTiaoAuth:
         from builder.passport import TouTiaoPassport
 
         auth = cls(session=session)
-        passport = TouTiaoPassport(auth.session, service=service)
+        passport = TouTiaoPassport(
+            auth.session,
+            service=service,
+            fingerprint=fingerprint,
+            csrf_token=csrf_token,
+            user_agent=user_agent,
+        )
         try:
             challenge = passport.get_qrcode()
             if on_qrcode is not None:
@@ -147,12 +156,21 @@ class TouTiaoAuth:
         service: str = "https://mp.toutiao.com/profile_v4/",
         session: requests.Session | None = None,
         extra_params: dict | None = None,
+        fingerprint: str = "",
+        csrf_token: str = "",
+        user_agent: str | None = None,
     ) -> "TouTiaoAuth":
         """用调用方已取得的短信验证码完成纯 HTTP 登录。"""
         from builder.passport import TouTiaoPassport
 
         auth = cls(session=session)
-        passport = TouTiaoPassport(auth.session, service=service)
+        passport = TouTiaoPassport(
+            auth.session,
+            service=service,
+            fingerprint=fingerprint,
+            csrf_token=csrf_token,
+            user_agent=user_agent,
+        )
         try:
             passport.sms_login(mobile, code, extra_params=extra_params)
             auth._prepare_creator_cookies_from_session(verified=True)

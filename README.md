@@ -7,7 +7,7 @@
 | 能力 | 入口 | 状态 |
 | --- | --- | --- |
 | Cookie 会话 | `TouTiaoAuth.from_cookie`、`prepare_auth` | Cookie 只在内存导入 Python 进程；创作者网页状态、搜索、Item 均使用 HTTP 请求，不读取浏览器配置 |
-| 纯 HTTP 登录 | `TouTiaoPassport`、`TouTiaoAuth.from_qrcode_login`、`from_sms_login` | 已对齐 SSO 二维码获取/轮询和短信验证码请求；二维码由 `on_qrcode` 回调交给调用方展示，滑块挑战只返回 `CaptchaRequired`，不执行自动化绕过 |
+| 纯 HTTP 登录 | `TouTiaoPassport`、`TouTiaoAuth.from_qrcode_login`、`from_sms_login` | 已按独立 Chrome 的 Network 证据对齐 SSO 二维码获取/轮询和短信验证码请求；二维码由 `on_qrcode` 回调交给调用方展示，滑块挑战只返回 `CaptchaRequired`，不执行自动化绕过 |
 | 头条号网页状态与草稿 | `TouTiaoCreatorWebApi.is_logged_in`、`has_account_auth`、`list_drafts`、`delete_draft` | `is_logged_in()` 已用本人 Chrome 请求 Cookie 在 Python 在线返回 true；网页草稿 GET 与指定草稿删除 POST 已观察到成功响应。`delete_draft` 会永久删除指定草稿 |
 | 头条 OAuth 授权与续期 | `TouTiaoOAuth.authorize_url`、`exchange_code`、`refresh_access_token` | 官方端点有文档，mock 请求测试通过；真实授权未验证 |
 | 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测能提取作品链接，数量随页面变化；当前只支持第 0 页，后续页明确报错，避免把重复首页当成翻页结果 |
@@ -71,7 +71,7 @@ assert item["title"] and item["content"]
 
 ### 创作者登录：纯 HTTP 二维码或短信验证码
 
-`TouTiaoPassport` 对齐登录页实际使用的 SSO 接口：`GET /get_qrcode/`、`GET /check_qrconnect/`、`POST /send_activation_code/v2/` 和 `POST /quick_login/v2/`。二维码内容以 `QRCodeChallenge.image_data_uri` 返回，调用方可用 `challenge.save(path)` 保存 PNG 或在自己的终端/界面展示；本库不启动浏览器、不读取浏览器 Cookie。二维码轮询状态为 `confirmed` 后，requests 会话中的 Cookie 只按域提取到 `auth.creator_cookie` 与共享 `auth.cookie`。
+`TouTiaoPassport` 对齐登录页实际使用的 SSO 接口：`GET /get_qrcode/`、`GET /check_qrconnect/`、`POST /send_activation_code/v2/` 和 `POST /quick_login/v2/`。公共参数顺序为 `ui_version → aid → account_sdk_source → sdk_version → language → verifyFp → fp`，其中 `verifyFp` 和 `fp` 直接取当前 requests 会话的 `s_v_web_id` Cookie；`passport_csrf_token` / `passport_csrf_token_default` 也在请求时从会话读取。二维码内容以 `QRCodeChallenge.image_data_uri` 返回，调用方可用 `challenge.save(path)` 保存 PNG 或在自己的终端/界面展示；本库不启动浏览器、不读取浏览器配置。二维码轮询状态为 `confirmed` 后，requests 会话中的 Cookie 只按域提取到 `auth.creator_cookie` 与共享 `auth.cookie`。Network 取证和 Python 重放差异见 `working_dir/platform_api_rework/network_forensics_20261007/headline/browser_python_diff.md`。
 
 ```python
 from builder.auth import TouTiaoAuth
