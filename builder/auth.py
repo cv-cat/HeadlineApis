@@ -48,7 +48,7 @@ def _expiry_seconds(value: object) -> int | None:
 
 
 class TouTiaoAuth:
-    """兼容旧 ``auth.cookie``，并承载 Creator Open API 的 token。"""
+    """网页 Cookie 与 Creator Open API token 各自独立。"""
 
     def __init__(
         self,
@@ -64,6 +64,9 @@ class TouTiaoAuth:
     ):
         self.cookie: dict[str, str] = {}
         self.cookie_str = ""
+        self.creator_cookie: dict[str, str] = {}
+        self.creator_cookie_str = ""
+        self.creator_login_verified = False
         self.access_token = access_token
         self.open_id = open_id
         self.refresh_token = refresh_token
@@ -88,6 +91,13 @@ class TouTiaoAuth:
         return cls(cookie_str, **kwargs)
 
     @classmethod
+    def from_qrcode_login(cls, timeout_seconds: int = 300) -> "TouTiaoAuth":
+        """在独立可见的浏览器窗口扫码，返回仅驻留内存的网页会话。"""
+        from builder.browser_login import browser_qrcode_login
+
+        return browser_qrcode_login(cls, timeout_seconds=timeout_seconds)
+
+    @classmethod
     def from_access_token(
         cls, access_token: str, open_id: str, **kwargs
     ) -> "TouTiaoAuth":
@@ -98,6 +108,13 @@ class TouTiaoAuth:
     def prepare_auth(self, cookie_str: str) -> "TouTiaoAuth":
         self.cookie = trans_cookies(cookie_str)
         self.cookie_str = cookie_str
+        return self
+
+    def prepare_creator_auth(self, cookie_str: str, *, verified: bool = False) -> "TouTiaoAuth":
+        """保存 mp.toutiao.com 的 Cookie；不把它当作 Open API 授权。"""
+        self.creator_cookie = trans_cookies(cookie_str)
+        self.creator_cookie_str = cookie_str
+        self.creator_login_verified = verified
         return self
 
     # 原仓库公开方法拼写有误；保留它供旧调用方使用。
