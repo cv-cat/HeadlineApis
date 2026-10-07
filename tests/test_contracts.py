@@ -10,6 +10,7 @@ import requests
 from builder.auth import OpenApiError, TouTiaoAuth, TouTiaoOAuth
 from tou_tiao_api import TouTiaoApi
 from tou_tiao_creator_api import TouTiaoCreatorApi
+from tou_tiao_creator_web_api import TouTiaoCreatorWebApi
 
 
 class FakeResponse:
@@ -289,6 +290,28 @@ class ReadContractTest(unittest.TestCase):
         api = TouTiaoApi(session=FakeSession([response]))
         with self.assertRaisesRegex(ValueError, "no single-file URL"):
             api.get_video_url("public-video-id", TouTiaoAuth())
+
+    def test_one_auth_keeps_creator_login_and_consumer_collection_cookies_separate(self):
+        search_html = '<a href="https://www.toutiao.com/article/123/">公开作品</a>'
+        item_html = (
+            '<script type="application/ld+json">'
+            '{"headline":"公开作品","description":"简介"}</script>'
+        )
+        http = FakeSession([
+            FakeResponse(json_data={"code": 0, "data": {"is_login": True}}),
+            FakeResponse(text=search_html),
+            FakeResponse(text=item_html),
+        ])
+        auth = TouTiaoAuth.from_cookie("parent=shared", session=http)
+        auth.prepare_creator_auth("creator=private; parent=shared")
+        self.assertTrue(TouTiaoCreatorWebApi(auth).is_logged_in())
+        api = TouTiaoApi(session=auth.session)
+        search = api.search("咖啡", 0, auth)
+        item = api.item(search["items"][0]["url"], auth)
+        self.assertEqual((item["type"], item["title"]), ("article", "公开作品"))
+        self.assertEqual(http.calls[0][2]["cookies"], {"creator": "private", "parent": "shared"})
+        self.assertEqual(http.calls[1][2]["cookies"], {"parent": "shared"})
+        self.assertEqual(http.calls[2][2]["cookies"], {"parent": "shared"})
 
 
 class CreatorContractTest(unittest.TestCase):

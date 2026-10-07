@@ -6,9 +6,9 @@
 
 | 能力 | 入口 | 状态 |
 | --- | --- | --- |
-| Cookie 会话 | `TouTiaoAuth.from_cookie`、`prepare_auth` | 复用已有网页 Cookie 进行读取，本地解析与契约测试通过；实际 Cookie 有效性需本人账号验证 |
+| Cookie 会话 | `TouTiaoAuth.from_cookie`、`prepare_auth` | 2026-10-07 将本人已登录 Chrome 的请求 Cookie 仅在内存导入同一 Python 进程，创作者登录状态、搜索、Item 均在线通过；独立网页登录辅助窗口产生的 Cookie 仍待实测 |
 | 可见浏览器登录 | `TouTiaoAuth.from_browser_login`；旧名 `from_qrcode_login` 保留 | 独立 Chromium 打开头条创作者登录页，在官方页面选择二维码或手机验证码；登录后只读检查创作者首页、新 Cookie 与登录状态接口。本地假浏览器契约测试通过，真实辅助流程待验证 |
-| 头条号网页状态与草稿 | `TouTiaoCreatorWebApi.is_logged_in`、`has_account_auth`、`list_drafts`、`delete_draft` | 本人已登录页面观察到实际 GET，以及指定草稿删除 POST 的成功响应；Python Cookie 客户端通过契约测试，真实账号在 Python 中待验证。`delete_draft` 会永久删除指定草稿 |
+| 头条号网页状态与草稿 | `TouTiaoCreatorWebApi.is_logged_in`、`has_account_auth`、`list_drafts`、`delete_draft` | `is_logged_in()` 已用本人 Chrome 请求 Cookie 在 Python 在线返回 true；页面观察到草稿 GET 与指定草稿删除 POST 的成功响应，`list_drafts()` 的 Python 实测仍待完成。`delete_draft` 会永久删除指定草稿 |
 | 头条 OAuth 授权与续期 | `TouTiaoOAuth.authorize_url`、`exchange_code`、`refresh_access_token` | 官方端点有文档，mock 请求测试通过；真实授权未验证 |
 | 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测能提取作品链接，数量随页面变化；当前只支持第 0 页，后续页明确报错，避免把重复首页当成翻页结果 |
 | Item 详情 | `TouTiaoApi.item`、旧 `get_work_info` | 2026-10-07 匿名实测搜索→Item 同一脚本跑通：搜索给出 `/group/{id}/`，归一到 `/article/{id}/`，浏览器最终跳转真实 `/video/{id}/`；返回非空标题、简介、缩略图及分离音视频流。浏览器回退需安装 Playwright 与 Chromium |
@@ -70,7 +70,9 @@ item = api.item(result["items"][0]["url"], auth)
 assert item["title"] and item["content"]
 ```
 
-`item["videos"]` 只放页面明确给出的单文件 `contentUrl`。当前视频页的播放器使用 `blob:` 地址，旧 `get_video_url(video_id)` 对实测视频返回空 `video_list`；不能把 `blob:` 当成下载地址。`item["media_streams"]` 从页面 `RENDER_DATA` 提取独立视频和音频流，URL 可能过期，使用时需自行选择画质并合流；仓库尚未实现成品视频文件下载。网页登录后的 Cookie 可以传给读取接口，但本次搜索→Item 在线验收使用匿名会话，未验证从独立登录窗口取得的 Cookie 在详情页的行为。
+`item["videos"]` 只放页面明确给出的单文件 `contentUrl`。当前视频页的播放器使用 `blob:` 地址，旧 `get_video_url(video_id)` 对实测视频返回空 `video_list`；不能把 `blob:` 当成下载地址。`item["media_streams"]` 从页面 `RENDER_DATA` 提取独立视频和音频流，URL 可能过期，使用时需自行选择画质并合流；仓库尚未实现成品视频文件下载。
+
+随后又用本人**当前 Chrome 登录会话**验收同一 Python 对象的登录→采集链路：从 `mp.toutiao.com` 已登录请求取得仅在内存驻留的完整 Cookie，`TouTiaoCreatorWebApi(auth).is_logged_in()` 返回 true；将 Chrome 对 `www.toutiao.com` 与 `so.toutiao.com` 实际发送的 Cookie 取交集作为 `auth.cookie`，避免把站点专属 Cookie 送往其他子域。同一 `auth` 的 `search("咖啡", 0)` 返回 7 条，首条进入 `item()` 得到视频页、非空标题/简介、1 张封面、4 条视频流、1 条音频流。仅用 `document.cookie` 可见的 14 项创作者 Cookie 时，Python 登录状态返回 false；完整请求 Cookie 则为 true，说明不能忽略 HttpOnly Cookie。验收没有输出或落盘 Cookie。仓库 `from_browser_login()` 的独立登录窗口仍需单独验收；这里复用的是当时现有 Chrome 会话。
 
 ### 创作者网页登录：二维码或手机验证码
 
@@ -190,4 +192,4 @@ python -m unittest discover -s tests -v
 python -m compileall -q builder tou_tiao_api.py tou_tiao_creator_api.py main.py
 ```
 
-测试使用假会话和假浏览器，不发送真实作品。匿名搜索→Item 已在同一 Python 脚本中只读实测；真实 Python Cookie 会话、OAuth、上传与发布仍需对应账号在受控环境逐项实测。搜索分页在线返回重复作品，当前已禁止后续页请求。`.env` 已从版本追踪移除并忽略；使用 `.env.example` 查看变量名，不要提交 Cookie、Token 或 `client_secret`。
+测试使用假会话和假浏览器，不发送真实作品。匿名搜索→Item 以及本人当前 Chrome Cookie 导入后的登录状态→搜索→Item 均已在同一 Python 脚本中只读实测；独立网页登录辅助流程、OAuth、上传与发布仍需对应账号在受控环境逐项实测。搜索分页在线返回重复作品，当前已禁止后续页请求。`.env` 已从版本追踪移除并忽略；使用 `.env.example` 查看变量名，不要提交 Cookie、Token 或 `client_secret`。
