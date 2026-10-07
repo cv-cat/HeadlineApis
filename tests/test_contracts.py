@@ -47,6 +47,11 @@ class AuthContractTest(unittest.TestCase):
         self.assertIs(auth.perepare_auth("x=1"), auth)
         self.assertEqual(auth.cookie, {"x": "1"})
         auth.close()
+        combined = TouTiaoAuth.from_access_token(
+            "access", "open-id", cookie_str="ttwid=web-cookie", session=FakeSession([])
+        )
+        self.assertEqual(combined.cookie, {"ttwid": "web-cookie"})
+        self.assertEqual((combined.access_token, combined.open_id), ("access", "open-id"))
 
     def test_oauth_authorize_and_exchange(self):
         url = TouTiaoOAuth.authorize_url(
@@ -75,6 +80,34 @@ class AuthContractTest(unittest.TestCase):
         self.assertEqual((method, endpoint), ("POST", "https://open.snssdk.com/oauth/access_token/"))
         self.assertEqual(kwargs["data"]["grant_type"], "authorization_code")
         self.assertEqual(kwargs["data"]["code"], "code")
+        prepared = requests.Request(method, endpoint, data=kwargs["data"]).prepare()
+        self.assertEqual(prepared.headers["Content-Type"], "application/x-www-form-urlencoded")
+
+    def test_oauth_callback_checks_redirect_and_state_before_code(self):
+        redirect = "https://example.test/callback?flow=toutiao"
+        callback = redirect + "&code=one-time-code&state=expected"
+        self.assertEqual(
+            TouTiaoOAuth.code_from_callback(
+                callback, redirect_uri=redirect, expected_state="expected"
+            ),
+            "one-time-code",
+        )
+        invalid = (
+            "https://evil.test/callback?flow=toutiao&code=secret&state=expected",
+            redirect + "&code=secret&state=wrong",
+            redirect + "&code=secret&code=second&state=expected",
+            redirect + "&error=access_denied&state=expected",
+        )
+        for value in invalid:
+            with self.subTest(callback=value), self.assertRaises(ValueError) as caught:
+                TouTiaoOAuth.code_from_callback(
+                    value, redirect_uri=redirect, expected_state="expected"
+                )
+            self.assertNotIn("secret", str(caught.exception))
+        with self.assertRaises(ValueError):
+            TouTiaoOAuth.authorize_url("client", "javascript:alert(1)", ["user_info"], "nonce")
+        with self.assertRaises(ValueError):
+            TouTiaoOAuth.authorize_url("client", redirect, "user_info", "nonce")
 
     def test_refresh_access_token_uses_toutiao_multipart_and_updates_session(self):
         http = FakeSession([FakeResponse(json_data={"data": {
@@ -116,6 +149,13 @@ class AuthContractTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             TouTiaoOAuth.refresh_access_token("", auth)
         self.assertEqual(len(http.calls), 1)
+
+    def test_error_in_extra_without_data_raises_platform_error(self):
+        http = FakeSession([FakeResponse(json_data={"extra": {"error_code": 10010}})])
+        auth = TouTiaoAuth.from_access_token("token", "user", session=http)
+        with self.assertRaises(OpenApiError) as caught:
+            TouTiaoCreatorApi(auth).list_videos()
+        self.assertEqual(caught.exception.code, 10010)
 
 
 class ReadContractTest(unittest.TestCase):

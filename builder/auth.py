@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hmac
 import time
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
 
@@ -24,15 +25,16 @@ def read_open_api_data(response: requests.Response) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("Toutiao Open API response must be a JSON object")
     data = payload.get("data")
+    extra = payload.get("extra") or {}
+    if not isinstance(extra, dict):
+        raise ValueError("Toutiao Open API response has invalid extra data")
+    for source in (data, extra):
+        if isinstance(source, dict):
+            code = source.get("error_code", 0)
+            if str(code) != "0":
+                raise OpenApiError(code)
     if not isinstance(data, dict):
         raise ValueError("Toutiao Open API response has no data object")
-    extra = payload.get("extra") or {}
-    code = data.get("error_code", extra.get("error_code", 0))
-    if str(code) != "0":
-        raise OpenApiError(code)
-    extra_code = extra.get("error_code", 0)
-    if str(extra_code) != "0":
-        raise OpenApiError(extra_code)
     return data
 
 
@@ -123,11 +125,23 @@ class TouTiaoOAuth:
     AUTH_BASE = "https://open.snssdk.com"
 
     @staticmethod
+    def _validate_redirect_uri(redirect_uri: str) -> None:
+        parsed = urlsplit(redirect_uri)
+        if (parsed.scheme not in ("http", "https") or not parsed.netloc
+                or parsed.username or parsed.password or parsed.fragment):
+            raise ValueError("redirect_uri must be an HTTP(S) URL without credentials or fragment")
+
+    @staticmethod
     def authorize_url(
         client_key: str, redirect_uri: str, scopes: list[str], state: str
     ) -> str:
         if not all((client_key, redirect_uri, scopes, state)):
             raise ValueError("client_key, redirect_uri, scopes and state are required")
+        TouTiaoOAuth._validate_redirect_uri(redirect_uri)
+        if isinstance(scopes, (str, bytes)) or any(
+            not isinstance(scope, str) or not scope.strip() for scope in scopes
+        ):
+            raise ValueError("scopes must contain non-empty strings")
         query = urlencode(
             {
                 "client_key": client_key,
@@ -138,6 +152,36 @@ class TouTiaoOAuth:
             }
         )
         return f"{TouTiaoOAuth.AUTH_BASE}/oauth/authorize/?{query}"
+
+    @staticmethod
+    def code_from_callback(
+        callback_url: str, *, redirect_uri: str, expected_state: str
+    ) -> str:
+        """校验回调地址与 state 后提取一次性 code，不在错误中输出 code。"""
+        if not expected_state:
+            raise ValueError("expected_state is required")
+        TouTiaoOAuth._validate_redirect_uri(redirect_uri)
+        expected = urlsplit(redirect_uri)
+        actual = urlsplit(callback_url)
+        if actual.username or actual.password or actual.fragment or (
+            actual.scheme.lower(), actual.hostname, actual.port, actual.path
+        ) != (
+            expected.scheme.lower(), expected.hostname, expected.port, expected.path
+        ):
+            raise ValueError("OAuth callback URL does not match redirect_uri")
+        query = parse_qs(actual.query, keep_blank_values=True)
+        for key, values in parse_qs(expected.query, keep_blank_values=True).items():
+            if query.get(key) != values:
+                raise ValueError("OAuth callback URL does not match redirect_uri")
+        states = query.get("state", [])
+        if len(states) != 1 or not hmac.compare_digest(states[0], expected_state):
+            raise ValueError("OAuth callback state mismatch")
+        if "error" in query:
+            raise ValueError("OAuth authorization was not granted")
+        codes = query.get("code", [])
+        if len(codes) != 1 or not codes[0]:
+            raise ValueError("OAuth callback has no single code")
+        return codes[0]
 
     @classmethod
     def exchange_code(

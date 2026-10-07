@@ -6,7 +6,7 @@
 
 | 能力 | 入口 | 状态 |
 | --- | --- | --- |
-| Cookie 会话 | `TouTiaoAuth.from_cookie`、`prepare_auth` | 本地解析与契约测试通过；Cookie 是否有效需用户账号验证 |
+| Cookie 会话 | `TouTiaoAuth.from_cookie`、`prepare_auth` | 复用已有网页 Cookie 进行读取，本地解析与契约测试通过；不包含扫码登录或 Cookie 有效性检测，需用户账号验证 |
 | 头条 OAuth 授权与续期 | `TouTiaoOAuth.authorize_url`、`exchange_code`、`refresh_access_token` | 官方端点有文档，mock 请求测试通过；真实授权未验证 |
 | 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测返回 6 个头条作品链接；当前只支持第 0 页，后续页明确报错，避免把重复首页当成翻页结果 |
 | Item 详情 | `TouTiaoApi.item`、旧 `get_work_info` | 接受 `https://www.toutiao.com/article/{id}/`、`video/{id}/`、`item/{id}/`、`group/{id}/`；解析契约测试通过，线上详情页面待验证 |
@@ -17,7 +17,7 @@
 | 特定视频数据 | `TouTiaoCreatorApi.get_video_data` | 官方端点已确认；请求体由调用方提供，字段待验证 |
 | 图文、微头条发布 | `publish_article` 明确抛出 `NotImplementedError` | 官方头条发布接入方案明确目前只支持小视频；创作者网页私有接口待单独验证 |
 
-**上传不会自动发布。** 只有调用 `publish_video` 才会提交作品；成功提交后仍有平台审核过程。Creator API 需要已审核应用及用户授权的 `toutiao.video.create` 或 `toutiao.video.data` 权限。Cookie 不能代替开放平台的 access token。
+**上传不会自动发布。** 只有调用 `publish_video` 才会提交作品；成功提交后仍有平台审核过程。上传/发布需要已审核应用与账号授权的 `toutiao.video.create`，视频列表/数据需要 `toutiao.video.data`。网页 Cookie 不能代替开放平台的 access token；OAuth token 也不用于网页搜索。若同时需要读取网页和 Creator Open API，可在 `TouTiaoAuth.from_access_token(..., cookie_str=...)` 中分别提供两类凭据。
 
 ## 安装与只读示例
 
@@ -51,32 +51,53 @@ with TouTiaoAuth.from_cookie(cookie_str) as auth:
 
 ## OAuth 与视频 Creator
 
-开发者先在头条开放平台申请权限，把授权 URL 展示给本人确认，再从回调取得 `code`。`state` 应由应用生成随机值，并在回调验证。`client_secret` 只应保存在服务端。
+开发者先在头条开放平台申请权限，并配置与应用登记一致的 HTTP(S) 回调地址。`.env.example` 仅列字段名，代码**不会自动加载 `.env`**；本地通过环境变量或服务端密钥管理注入 `TOUTIAO_CLIENT_KEY`、`TOUTIAO_CLIENT_SECRET`、`TOUTIAO_REDIRECT_URI`。`client_secret` 只保存在服务端；不要把回调中的一次性 `code`、Token 或 Cookie 写进仓库、终端日志或聊天。
 
 ```python
+import os
+import secrets
+
 from builder.auth import TouTiaoOAuth
 from tou_tiao_creator_api import TouTiaoCreatorApi
 
+client_key = os.environ["TOUTIAO_CLIENT_KEY"]
+redirect_uri = os.environ["TOUTIAO_REDIRECT_URI"]
+state = secrets.token_urlsafe(24)
 url = TouTiaoOAuth.authorize_url(
     client_key, redirect_uri, ["toutiao.video.create", "toutiao.video.data"], state
 )
-# 用户打开 url 授权；回调后校验 state，再将 code 交给服务端：
-auth = TouTiaoOAuth.exchange_code(client_key, client_secret, code)
-# 在服务端安全保存 auth.refresh_token、auth.expires_at、auth.refresh_expires_at 和 auth.scope。
-# access_token 到期或平台返回 token 失效时，可刷新原会话：
-TouTiaoOAuth.refresh_access_token(client_key, auth)
-creator = TouTiaoCreatorApi(auth)
-uploaded = creator.upload_video("clip.mp4")
-video_id = uploaded["video"]["video_id"]
-# 用户确认发布后再单独调用；请求体仍需真实授权账号验证：
-published = creator.publish_video(video_id, "视频标题")
-videos = creator.list_videos(cursor=0, count=10)
+# 服务端按会话保存 state，把 url 展示给本人扫码并确认授权。
+# 回调处理器取得完整 callback_url 后：
+code = TouTiaoOAuth.code_from_callback(
+    callback_url, redirect_uri=redirect_uri, expected_state=state
+)
+auth = TouTiaoOAuth.exchange_code(
+    client_key, os.environ["TOUTIAO_CLIENT_SECRET"], code
+)
+granted = {part.strip() for part in auth.scope.split(",")}
+if "toutiao.video.create" not in granted:
+    raise RuntimeError("授权缺少 toutiao.video.create")
+# 若授权了 toutiao.video.data，可先只读调用：
+if "toutiao.video.data" in granted:
+    videos = TouTiaoCreatorApi(auth).list_videos(cursor=0, count=10)
+# 在服务端安全保存 auth.refresh_token、auth.expires_at、auth.refresh_expires_at、auth.scope。
+# access_token 临近到期时：TouTiaoOAuth.refresh_access_token(client_key, auth)
 auth.close()
 ```
 
-头条刷新只针对 `access_token`：官方资料指出 `refresh_token` 不能续期，过期后须重新取得用户授权。刷新接口当前文档的参数表为空，仓库依照[官方 SDK 示例](https://open.douyin.com/platform/resource/docs/develop/guide/douyin-live-sdk/android)采用 `client_key`、`grant_type=refresh_token`、`refresh_token` 字段，以该接口文档指定的 multipart 表单发送；字段来自同平台示例，真实头条授权账号仍待验证。搜索页码大于 0 时 `search()` 抛出 `NotImplementedError`，旧 `getSearchInfo()` 返回 `(False, 错误说明, None)`。
+这里的 `callback_url` 来自应用自己的回调处理器，`state` 必须取回授权开始时同一会话保存的值；`code_from_callback` 检查回调地址、`state` 与单个 `code`，不会自动监听端口或打开浏览器。换码接口按[官方文档](https://open.douyin.com/platform/resource/docs/openapi/account-permission/get-access-token)使用 URL 编码表单。头条刷新只针对 `access_token`：官方资料指出 `refresh_token` 不能续期，过期后须重新取得用户授权。刷新接口当前文档的参数表为空，仓库依照[官方 SDK 示例](https://open.douyin.com/platform/resource/docs/develop/guide/douyin-live-sdk/android)采用 `client_key`、`grant_type=refresh_token`、`refresh_token` 字段，以该接口文档指定的 multipart 表单发送；字段来自同平台示例，真实头条授权账号仍待验证。搜索页码大于 0 时 `search()` 抛出 `NotImplementedError`，旧 `getSearchInfo()` 返回 `(False, 错误说明, None)`。
 
 单文件上传限制为 128 MiB；更大的视频需要官方分片接口，本仓库暂未封装。`get_video_data(payload)` 会原样发送调用方给出的请求体；不要把未知字段当作已验证的 API 契约。
+
+### 真实账号验收所需材料与步骤
+
+| 验收项 | 最小材料 | 操作与通过条件 |
+| --- | --- | --- |
+| 网页读取 | 本人今日头条网页 Cookie，仅用于本机 | `TOUTIAO_COOKIE` 注入环境后运行 `python main.py search 人工智能 --page 0`；确认返回作品链接。Cookie 不证明 Open API 授权。 |
+| OAuth 换码 | 已审核头条应用的 `client_key`、服务端 `client_secret`、登记的回调 URI；本人同意 `toutiao.video.create`，读取列表另需 `toutiao.video.data` | 生成授权 URL；本人授权；校验同一会话的 `state`；一次性 `code` 换得 `open_id`、Token、实际 `scope` 与有效期。只需把凭据放在本机/服务端，不需要发送到聊天。 |
+| 凭据只读检查 | 上一步获得的 Token，且包含 `toutiao.video.data` | 调用 `list_videos()`；检查 `error_code=0`、账号对应和返回结构，不提交作品。若只授权了 create，跳过这一步。 |
+| 上传和发布契约 | 获准的测试账号、`toutiao.video.create`、一段不超过 128 MiB 且不超过 1 分钟的测试视频、明确的测试发布内容 | 先 `upload_video()` 获取 `video.video_id`。确认上传响应后，由用户明确选择测试发布，再调用 `publish_video(video_id, text)`；核对 `item_id`、审核状态及请求体字段。当前官方发布页的 Body 参数表为“暂无数据”，故 `video_id`/`text` 需此步实测，不能仅凭 mock 测试宣称可用。 |
+| 续期 | 已安全保存的 `refresh_token`、`client_key` | 临近 access token 到期时调用 `refresh_access_token()`，核对 `open_id` 未变化和新有效期；refresh token 到期后重新授权。 |
 
 ## 端点依据
 
