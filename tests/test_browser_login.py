@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from builder.auth import TouTiaoAuth
 from builder.browser_login import (
@@ -9,6 +9,7 @@ from builder.browser_login import (
     CREATOR_LOGIN_URL,
     _complete_browser_login,
     _is_creator_home,
+    browser_qrcode_login,
 )
 
 
@@ -103,8 +104,10 @@ class BrowserLoginTest(unittest.TestCase):
             cookie("creator", "three", domain="mp.toutiao.com"),
         ]
         playwright, browser, context, page = workflow(before=initial, after=final)
-        with patch("builtins.print"):
+        with patch("builtins.print") as prompt:
             auth = _complete_browser_login(playwright, TouTiaoAuth, 120)
+        self.assertIn("扫码", prompt.call_args.args[0])
+        self.assertIn("手机验证码", prompt.call_args.args[0])
         self.assertEqual(playwright.chromium.launch_args, {"headless": False})
         self.assertEqual(browser.context_calls, 1)
         self.assertTrue(browser.closed and context.closed)
@@ -154,9 +157,22 @@ class BrowserLoginTest(unittest.TestCase):
             "https://mp.toutiao.com/auth/page/login?next=/profile_v4/"
         ))
 
-    def test_auth_entry_delegates_to_browser_flow(self):
+    def test_generic_and_legacy_auth_entries_share_browser_flow(self):
         instance = TouTiaoAuth()
-        with patch("builder.browser_login.browser_qrcode_login", return_value=instance) as login:
-            self.assertIs(TouTiaoAuth.from_qrcode_login(timeout_seconds=45), instance)
-        login.assert_called_once_with(TouTiaoAuth, timeout_seconds=45)
+        with patch("builder.browser_login.browser_login", return_value=instance) as login:
+            self.assertIs(TouTiaoAuth.from_browser_login(timeout_seconds=45), instance)
+            self.assertIs(TouTiaoAuth.from_qrcode_login(timeout_seconds=60), instance)
+        self.assertEqual(login.call_args_list, [
+            call(TouTiaoAuth, timeout_seconds=45),
+            call(TouTiaoAuth, timeout_seconds=60),
+        ])
+        instance.close()
+
+    def test_legacy_helper_alias_delegates_to_generic_login(self):
+        instance = TouTiaoAuth()
+        with patch("builder.browser_login.browser_login", return_value=instance) as login:
+            self.assertIs(
+                browser_qrcode_login(TouTiaoAuth, timeout_seconds=75), instance
+            )
+        login.assert_called_once_with(TouTiaoAuth, timeout_seconds=75)
         instance.close()

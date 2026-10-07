@@ -1,4 +1,4 @@
-"""借助平台网页完成扫码；不复刻私有二维码接口，也不复用浏览器配置。"""
+"""借助平台网页完成登录；不复刻私有登录接口，也不复用浏览器配置。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ CREATOR_HOME_PATTERN = re.compile(r"^https://mp\.toutiao\.com/profile_v4(?:/|\?|
 
 
 class BrowserLoginError(RuntimeError):
-    """浏览器扫码完成后的只读核验失败。"""
+    """浏览器登录后的只读核验失败。"""
 
 
 def _is_creator_home(url: str) -> bool:
@@ -57,23 +57,23 @@ def _complete_browser_login(playwright, auth_class, timeout_seconds: int):
             page = context.new_page()
             page.goto(CREATOR_LOGIN_URL, wait_until="domcontentloaded")
             initial_cookies = context.cookies(CREATOR_HOME_URL)
-            print("请在新开的 Chromium 窗口用今日头条 App 扫码并确认；成功后进入创作者首页。")
+            print("请在新开的 Chromium 窗口选择扫码或手机验证码并完成登录；成功后进入创作者首页。")
             page.wait_for_url(
                 CREATOR_HOME_PATTERN,
                 wait_until="domcontentloaded",
                 timeout=timeout_seconds * 1000,
             )
 
-            # GET 创作者首页，只读检查扫码后是否仍被重定向到登录页。
+            # GET 创作者首页，只读检查登录后是否仍被重定向到登录页。
             page.goto(CREATOR_HOME_URL, wait_until="domcontentloaded")
             page.wait_for_timeout(1500)  # 留出时间让前端执行登录态重定向。
             if not _is_creator_home(page.url):
-                raise BrowserLoginError("Creator homepage redirected away after QR login")
+                raise BrowserLoginError("Creator homepage redirected away after browser login")
             creator_cookies = context.cookies(CREATOR_HOME_URL)
             before = {_cookie_identity(cookie) for cookie in initial_cookies}
             after = {_cookie_identity(cookie) for cookie in creator_cookies}
             if not creator_cookies or not after.difference(before):
-                raise BrowserLoginError("No new Creator cookies after QR login")
+                raise BrowserLoginError("No new Creator cookies after browser login")
 
             auth = auth_class()
             auth.prepare_creator_auth(_cookie_header(creator_cookies), verified=True)
@@ -87,8 +87,8 @@ def _complete_browser_login(playwright, auth_class, timeout_seconds: int):
         browser.close()
 
 
-def browser_qrcode_login(auth_class, *, timeout_seconds: int = 300):
-    """启动新 Chromium 实例；平台网页自行轮询二维码状态。"""
+def browser_login(auth_class, *, timeout_seconds: int = 300):
+    """启动新 Chromium；用户在官方网页自行选择扫码或手机验证码。"""
     if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be a positive integer")
     try:
@@ -96,10 +96,15 @@ def browser_qrcode_login(auth_class, *, timeout_seconds: int = 300):
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise RuntimeError(
-            "Browser QR login requires playwright; install requirements-browser.txt and chromium"
+            "Browser login requires playwright; install requirements-browser.txt and chromium"
         ) from exc
     with sync_playwright() as playwright:
         try:
             return _complete_browser_login(playwright, auth_class, timeout_seconds)
         except PlaywrightTimeoutError:
-            raise BrowserLoginError("QR login or Creator homepage timed out") from None
+            raise BrowserLoginError("Browser login or Creator homepage timed out") from None
+
+
+def browser_qrcode_login(auth_class, *, timeout_seconds: int = 300):
+    """兼容旧辅助函数；浏览器页面也可选择手机验证码。"""
+    return browser_login(auth_class, timeout_seconds=timeout_seconds)
