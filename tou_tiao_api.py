@@ -3,6 +3,7 @@ import json
 import re
 import time
 import urllib
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -12,32 +13,173 @@ from builder.params import Params
 from utils.tou_tiao_utils import get_headers, generate_sign, trans_time, timestamp_to_str
 
 ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
+WORK_PATH_RE = re.compile(r"/(?:article|video|item|group)/\d+/?")
 
 
 class TouTiaoApi:
     base_url = "https://so.toutiao.com"
+
+    def __init__(self, session=None):
+        # 注入 requests 兼容对象，便于做不触网的请求契约测试。
+        self.http = session or requests
+
+    def search(self, keyword, page_num, auth, *, search_id=None):
+        """搜索首页作品，返回原始 HTML 与尽力提取的作品链接。
+
+        搜索页可能改变 HTML 结构；翻页请求在线返回了重复首页，暂不开放。
+        """
+        if not isinstance(keyword, str) or not keyword.strip():
+            raise ValueError("keyword is required")
+        if not isinstance(page_num, int) or page_num < 0:
+            raise ValueError("page_num must be a non-negative integer")
+        if page_num:
+            raise NotImplementedError("search pagination is unverified; only page_num=0 is supported")
+        if search_id is not None:
+            raise ValueError("search_id is only for pagination, which is unverified")
+        params = {"keyword": keyword, "pd": "synthesis", "page_num": page_num}
+        response = self.http.get(
+            f"{self.base_url}/search",
+            params=params,
+            headers=HeaderBuilder.build_common_header().get(),
+            cookies=auth.cookie,
+            timeout=30,
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        items = []
+        seen = set()
+        for link in soup.select("a[href]"):
+            href = link.get("href", "")
+            parsed = urlparse(urljoin(self.base_url, href))
+            if parsed.hostname == "so.toutiao.com" and parsed.path == "/search/jump":
+                target = parse_qs(parsed.query).get("url", [""])[0]
+                nested = parse_qs(urlparse(target).query).get("h5_url", [""])[0]
+                parsed = urlparse(unquote(nested or target))
+            if parsed.hostname not in {"toutiao.com", "www.toutiao.com"}:
+                continue
+            if not re.fullmatch(r"/(?:article|video|item|group)/\d+/?", parsed.path):
+                continue
+            url = f"https://www.toutiao.com{parsed.path}"
+            if url not in seen:
+                seen.add(url)
+                items.append({"url": url, "title": link.get_text(" ", strip=True)})
+        found_id = re.search(r'search_id\s*:\s*"([A-Z0-9]{20,})"', response.text)
+        return {
+            "raw_html": response.text,
+            "items": items,
+            "search_id": found_id.group(1) if found_id else None,
+        }
+
+    def item(self, work_url, auth):
+        """按作品 URL 读取图文或视频详情。"""
+        return self.get_work_info(work_url, auth)
+
+    @staticmethod
+    def _work_url(url):
+        parsed = urlparse(url)
+        if (parsed.scheme != "https" or parsed.hostname not in {"toutiao.com", "www.toutiao.com"}
+                or parsed.username or parsed.password or parsed.port not in (None, 443)):
+            raise ValueError("work_url must be an HTTPS toutiao.com URL")
+        if not WORK_PATH_RE.fullmatch(parsed.path):
+            raise ValueError("work_url must point to an article, video, item or group")
+        return f"https://www.toutiao.com{parsed.path}"
+
+    def _request_work_page(self, url, auth):
+        """只跟随同站作品重定向，避免 Cookie 被带到站外。"""
+        for _ in range(6):
+            response = self.http.get(
+                url, headers=get_headers(url), cookies=auth.cookie,
+                timeout=30, allow_redirects=False,
+            )
+            status = getattr(response, "status_code", 200)
+            if 300 <= status < 400:
+                location = getattr(response, "headers", {}).get("Location")
+                if not location:
+                    raise ValueError("work page redirect has no Location")
+                url = self._work_url(urljoin(url, location))
+                continue
+            response.raise_for_status()
+            return response.text, url
+        raise ValueError("work page redirected too many times")
+
+    @staticmethod
+    def _render_work_page(url, auth):
+        """普通 HTTP 只返回 JSVM 页面时，在隔离 Chromium 中等待作品数据。"""
+        try:
+            from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+        except ImportError as exc:
+            raise RuntimeError(
+                "work page requires Playwright; install requirements-browser.txt and Chromium"
+            ) from exc
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                context = browser.new_context()
+                if auth.cookie:
+                    context.add_cookies([
+                        {"name": str(name), "value": str(value), "url": "https://www.toutiao.com/"}
+                        for name, value in auth.cookie.items()
+                    ])
+                page = context.new_page()
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                    page.locator('script[type="application/ld+json"]').first.wait_for(
+                        state="attached", timeout=15000
+                    )
+                    if urlparse(page.url).path.startswith('/video/'):
+                        try:
+                            page.locator("#RENDER_DATA").wait_for(state="attached", timeout=5000)
+                        except PlaywrightTimeoutError:
+                            pass  # JSON-LD 中的标题、简介仍可读取。
+                except PlaywrightTimeoutError as exc:
+                    raise ValueError(
+                        "work page did not expose JSON-LD after browser rendering"
+                    ) from exc
+                final_url = TouTiaoApi._work_url(page.url)
+                return page.content(), final_url
+            finally:
+                browser.close()
+
+    @staticmethod
+    def _video_streams(soup):
+        """读取页面公开的分离音视频流；这些地址通常有有效期。"""
+        streams = {"video": [], "audio": []}
+        node = soup.find("script", id="RENDER_DATA")
+        if not node or not node.string:
+            return streams
+        try:
+            state = json.loads(unquote(node.string))
+            play = state["data"]["initialVideo"]["videoPlayInfo"]
+            dynamic = play["dynamic_video"]
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return streams
+        if not isinstance(dynamic, dict):
+            return streams
+        for kind in ("video", "audio"):
+            entries = dynamic.get(f"dynamic_{kind}_list", [])
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                url = entry.get("main_url")
+                if not isinstance(url, str) or urlparse(url).scheme != "https" or not urlparse(url).hostname:
+                    continue
+                meta = entry.get(f"{kind}_meta") or {}
+                stream = {"url": url}
+                if isinstance(meta, dict):
+                    for key in ("definition", "vwidth", "vheight", "codec_type"):
+                        if key in meta:
+                            stream[key] = meta[key]
+                streams[kind].append(stream)
+        return streams
 
     def getSearchInfo(self, keyword, page_num, auth):
         res = None
         success = True
         msg = '成功'
         try:
-            api = "/search"
-            headers = HeaderBuilder.build_common_header().get()
-            cookies = auth.cookie
-            params = {
-                "dvpf": "pc",
-                "source": "pagination",
-                "keyword": keyword,
-                "pd": "synthesis",
-                "action_type": "pagination",
-                "page_num": str(page_num),
-                "search_id": "202409031511249321F5AA49F1400A0BCC",
-                "from": "search_tab",
-                "cur_tab_title": "search_tab"
-            }
-            response = requests.get(self.base_url + api, headers=headers, cookies=cookies, params=params)
-            res = response.text
+            res = self.search(keyword, page_num, auth)["raw_html"]
         except Exception as e:
             success = False
             msg = str(e)
@@ -56,7 +198,8 @@ class TouTiaoApi:
         params.add_param("app_name", 'toutiao_web')
         params.with_ms_token()
         params.with_a_bogus()
-        resp = requests.get(f'https://www.toutiao.com{api}', headers=headers, cookies=auth.cookie, params=params.get())
+        resp = self.http.get(f'https://www.toutiao.com{api}', headers=headers, cookies=auth.cookie, params=params.get(), timeout=30)
+        resp.raise_for_status()
         return resp.json()
 
     def get_user_all_work(self, user_url, auth):
@@ -81,7 +224,8 @@ class TouTiaoApi:
             "token": token
         }
         params.with_a_bogus(data)
-        response_stat = requests.post(url, headers=headers, cookies=auth.cookie, params=params.get(), data=data)
+        response_stat = self.http.post(url, headers=headers, cookies=auth.cookie, params=params.get(), data=data, timeout=30)
+        response_stat.raise_for_status()
         response_stat_json = response_stat.json()
         page_headers = {
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -103,7 +247,8 @@ class TouTiaoApi:
         page_params = {
             "log_from": f"b24b98c824b3f_{time.time() * 1000}"
         }
-        response = requests.get(user_url, headers=page_headers, params=page_params, cookies=auth.cookie)
+        response = self.http.get(user_url, headers=page_headers, params=page_params, cookies=auth.cookie, timeout=30)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         script_text = soup.find_all('script', attrs={"id": "RENDER_DATA"})[0].string
         script_text = urllib.parse.unquote(script_text)
@@ -125,30 +270,74 @@ class TouTiaoApi:
         }
 
     def get_work_info(self, work_url, auth):
-        headers = get_headers(work_url)
-        response = requests.get(work_url, headers=headers, cookies=auth.cookie)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        work_url = self._work_url(work_url)
+        parsed = urlparse(work_url)
+        if parsed.path.startswith(("/group/", "/item/")):
+            # 搜索结果目前是 /group/{id}/，该 URL 只返回空壳；/article/{id}/
+            # 会重定向到实际的图文或视频页。
+            work_url = f"https://www.toutiao.com/article/{parsed.path.strip('/').split('/')[1]}/"
+        html, final_url = self._request_work_page(work_url, auth)
+        soup = BeautifulSoup(html, 'html.parser')
         script = soup.find_all('script', type="application/ld+json")
-        info = json.loads(script[0].string)
+        if not script:
+            html, final_url = self._render_work_page(work_url, auth)
+            soup = BeautifulSoup(html, 'html.parser')
+            script = soup.find_all('script', type="application/ld+json")
+        info = None
+        for node in script:
+            if not node.string:
+                continue
+            try:
+                payload = json.loads(node.string)
+            except json.JSONDecodeError:
+                continue
+            candidates = payload if isinstance(payload, list) else [payload]
+            for candidate in candidates:
+                if isinstance(candidate, dict) and isinstance(candidate.get("@graph"), list):
+                    candidates.extend(candidate["@graph"])
+                elif isinstance(candidate, dict) and (
+                    candidate.get('headline') or candidate.get('name')
+                ):
+                    info = candidate
+                    break
+            if info:
+                break
+        if not info:
+            raise ValueError("work page has no JSON-LD item data")
 
         images = []
         videos = []
-        if 'article' in work_url:
-            title = info['headline']
-            content = soup.find('article').text
-            images = info['image']
+        item_type = info.get('@type')
+        is_video = item_type == "VideoObject" or urlparse(final_url).path.startswith('/video/')
+        if not is_video:
+            title = info.get('headline') or info.get('name') or ''
+            article = soup.find('article')
+            content = article.get_text("\n", strip=True) if article else info.get('description', '')
+            image = info.get('image', [])
+            images = image if isinstance(image, list) else ([image] if image else [])
             for video in soup.find_all('div', attrs={'class': 'tt-video-box'}):
-                video_id = video['tt-videoid']
-                videos.append(self.get_video_url(video_id, auth))
+                video_id = video.get('tt-videoid')
+                if video_id:
+                    videos.append(self.get_video_url(video_id, auth))
         else:
-            title = info['name']
-            content = info['description']
-        return {
-            "title": ILLEGAL_CHARACTERS_RE.sub(r'', title),
-            "content": ILLEGAL_CHARACTERS_RE.sub(r'', content),
+            title = info.get('name') or info.get('headline') or ''
+            content = info.get('description', '')
+            thumbnail = info.get('thumbnailUrl') or info.get('image') or []
+            images = thumbnail if isinstance(thumbnail, list) else ([thumbnail] if thumbnail else [])
+            video_url = info.get('contentUrl')
+            if video_url:
+                videos.append(video_url)
+        result = {
+            "url": final_url,
+            "type": "video" if is_video else "article",
+            "title": ILLEGAL_CHARACTERS_RE.sub(r'', str(title or '')),
+            "content": ILLEGAL_CHARACTERS_RE.sub(r'', str(content or '')),
             "images": images,
             "videos": videos,
         }
+        if is_video:
+            result["media_streams"] = self._video_streams(soup)
+        return result
 
     def get_video_url(self, video_id, auth):
         url = f"https://i.snssdk.com/video/urls/1/toutiao/mp4/{video_id}"
@@ -156,9 +345,21 @@ class TouTiaoApi:
         params = {
             "callback": "tt__video__9n4f3t"
         }
-        response = requests.get(url, headers=headers, cookies=auth.cookie, params=params)
-        res_text = response.text.replace("tt__video__9n4f3t(", "")[:-1]
-        res_json = json.loads(res_text)
-        video_url = res_json['data']['video_list']['video_1']['main_url']
+        response = self.http.get(url, headers=headers, cookies=auth.cookie, params=params, timeout=30)
+        response.raise_for_status()
+        prefix = "tt__video__9n4f3t("
+        body = response.text.strip().removesuffix(";")
+        if not body.startswith(prefix) or not body.endswith(")"):
+            raise ValueError("legacy video endpoint returned invalid JSONP")
+        res_json = json.loads(body[len(prefix):-1])
+        video_list = res_json.get('data', {}).get('video_list') or {}
+        video = next(
+            (video_list[key] for key in ('video_1', 'video_2', 'video_3')
+             if isinstance(video_list.get(key), dict) and video_list[key].get('main_url')),
+            None,
+        )
+        if video is None:
+            raise ValueError("legacy video endpoint has no single-file URL")
+        video_url = video['main_url']
         video_url = base64.b64decode(video_url.encode('utf-8')).decode('utf-8')
         return video_url

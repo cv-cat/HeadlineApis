@@ -1,7 +1,4 @@
-import subprocess
 import time
-from functools import partial
-subprocess.Popen = partial(subprocess.Popen, encoding="utf-8")
 import execjs
 import sys
 import random
@@ -10,12 +7,11 @@ from os import path
 
 
 def trans_cookies(cookies_str):
-    cookies = dict()
-    for i in cookies_str.split("; "):
-        try:
-            cookies[i.split('=')[0]] = '='.join(i.split('=')[1:])
-        except:
-            continue
+    cookies = {}
+    for item in cookies_str.split(';'):
+        name, sep, value = item.strip().partition('=')
+        if sep and name:
+            cookies[name] = value
     return cookies
 
 

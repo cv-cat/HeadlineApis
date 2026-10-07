@@ -21,9 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 5000
-
 ENV PYTHONUNBUFFERED=1
 ENV NODE_ENV=production
 
-CMD ["python", "main.py"] 
+CMD ["python", "main.py", "--help"]
