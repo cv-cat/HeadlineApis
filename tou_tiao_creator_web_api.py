@@ -31,7 +31,10 @@ class TouTiaoCreatorWebApi:
             headers={"Accept": "application/json, text/plain, */*",
                      "Referer": f"{self.BASE_URL}/profile_v4/"},
             timeout=30,
+            allow_redirects=False,
         )
+        if 300 <= response.status_code < 400:
+            raise CreatorWebApiError(response.status_code)
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):

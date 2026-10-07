@@ -8,6 +8,7 @@ class FakeResponse:
     def __init__(self, payload, status=200):
         self.payload = payload
         self.status = status
+        self.status_code = status
 
     def raise_for_status(self):
         if self.status >= 400:
@@ -49,6 +50,7 @@ class CreatorWebApiTest(unittest.TestCase):
             self.assertEqual(kwargs["cookies"], {"creator_session": "web-secret"})
             self.assertNotIn("access-token", kwargs["headers"])
             self.assertEqual(kwargs["timeout"], 30)
+            self.assertIs(kwargs["allow_redirects"], False)
         self.assertEqual(session.calls[2][1]["params"], {"type": 0, "count": 10})
         self.assertEqual((auth.access_token, auth.open_id), ("", ""))
 
@@ -71,3 +73,12 @@ class CreatorWebApiTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             api.list_drafts(count=21)
         self.assertEqual(len(session.calls), 2)
+
+    def test_redirect_does_not_forward_creator_cookie(self):
+        session = FakeSession([FakeResponse(None, status=302)])
+        auth = TouTiaoAuth(session=session)
+        auth.prepare_creator_auth("creator_session=web-secret")
+        with self.assertRaises(CreatorWebApiError) as caught:
+            TouTiaoCreatorWebApi(auth).is_logged_in()
+        self.assertEqual(caught.exception.code, 302)
+        self.assertIs(session.calls[0][1]["allow_redirects"], False)
