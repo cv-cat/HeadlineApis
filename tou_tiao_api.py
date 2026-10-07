@@ -20,8 +20,9 @@ class TouTiaoApi:
     base_url = "https://so.toutiao.com"
 
     def __init__(self, session=None):
-        # 注入 requests 兼容对象，便于做不触网的请求契约测试。
-        self.http = session or requests
+        # 使用持久 requests.Session 保存 ttwid/tt_webid；测试可注入兼容对象。
+        self.http = session or requests.Session()
+        self._ttwid_ready = False
 
     def search(self, keyword, page_num, auth, *, search_id=None):
         """搜索首页作品，返回原始 HTML 与尽力提取的作品链接。
@@ -102,43 +103,53 @@ class TouTiaoApi:
             return response.text, url
         raise ValueError("work page redirected too many times")
 
-    @staticmethod
-    def _render_work_page(url, auth):
-        """普通 HTTP 只返回 JSVM 页面时，在隔离 Chromium 中等待作品数据。"""
-        try:
-            from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-        except ImportError as exc:
-            raise RuntimeError(
-                "work page requires Playwright; install requirements-browser.txt and Chromium"
-            ) from exc
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            try:
-                context = browser.new_context()
-                if auth.cookie:
-                    context.add_cookies([
-                        {"name": str(name), "value": str(value), "url": "https://www.toutiao.com/"}
-                        for name, value in auth.cookie.items()
-                    ])
-                page = context.new_page()
-                try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                    page.locator('script[type="application/ld+json"]').first.wait_for(
-                        state="attached", timeout=15000
-                    )
-                    if urlparse(page.url).path.startswith('/video/'):
-                        try:
-                            page.locator("#RENDER_DATA").wait_for(state="attached", timeout=5000)
-                        except PlaywrightTimeoutError:
-                            pass  # JSON-LD 中的标题、简介仍可读取。
-                except PlaywrightTimeoutError as exc:
-                    raise ValueError(
-                        "work page did not expose JSON-LD after browser rendering"
-                    ) from exc
-                final_url = TouTiaoApi._work_url(page.url)
-                return page.content(), final_url
-            finally:
-                browser.close()
+    def _ensure_ttwid(self, auth):
+        """用头条公开 ttwid 注册接口准备纯 HTTP 作品页会话。
+
+        作品页未带有效 ``ttwid`` 时会返回 JSVM 空壳。网页首屏脚本实际
+        先 POST ``ttwid.bytedance.com/ttwid/union/register/``，再 GET
+        回调地址；这里复现相同的两步请求，不执行脚本或启动浏览器。
+        """
+        if self._ttwid_ready or not isinstance(self.http, requests.Session):
+            return
+        if any(str(name).lower() == "ttwid" for name in auth.cookie):
+            self._ttwid_ready = True
+            return
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0 Safari/537.36"
+            ),
+            "Referer": "https://www.toutiao.com/",
+            "Origin": "https://www.toutiao.com",
+            "Accept": "application/json, text/plain, */*",
+        }
+        response = self.http.post(
+            "https://ttwid.bytedance.com/ttwid/union/register/",
+            json={"aid": 24, "service": "www.toutiao.com", "region": "cn",
+                  "union": True, "needFid": False},
+            headers={**headers, "Content-Type": "application/json"},
+            cookies=auth.cookie,
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        redirect_url = payload.get("redirect_url") if isinstance(payload, dict) else None
+        if not isinstance(redirect_url, str):
+            raise ValueError("ttwid registration returned no redirect URL")
+        redirect = urlparse(redirect_url)
+        if redirect.scheme != "https" or redirect.hostname != "www.toutiao.com" \
+                or not redirect.path.startswith("/ttwid/union/register/callback/"):
+            raise ValueError("ttwid registration redirect left the Toutiao callback")
+        callback = self.http.get(
+            redirect_url, headers=headers, cookies=auth.cookie,
+            timeout=30, allow_redirects=False,
+        )
+        callback.raise_for_status()
+        callback_payload = callback.json()
+        if not isinstance(callback_payload, dict) or str(callback_payload.get("status_code")) != "0":
+            raise ValueError("ttwid registration callback was not accepted")
+        self._ttwid_ready = True
 
     @staticmethod
     def _video_streams(soup):
@@ -276,13 +287,15 @@ class TouTiaoApi:
             # 搜索结果目前是 /group/{id}/，该 URL 只返回空壳；/article/{id}/
             # 会重定向到实际的图文或视频页。
             work_url = f"https://www.toutiao.com/article/{parsed.path.strip('/').split('/')[1]}/"
+        self._ensure_ttwid(auth)
         html, final_url = self._request_work_page(work_url, auth)
         soup = BeautifulSoup(html, 'html.parser')
         script = soup.find_all('script', type="application/ld+json")
         if not script:
-            html, final_url = self._render_work_page(work_url, auth)
-            soup = BeautifulSoup(html, 'html.parser')
-            script = soup.find_all('script', type="application/ld+json")
+            raise ValueError(
+                "work page did not expose JSON-LD over HTTP; "
+                "ttwid registration or the public page contract changed"
+            )
         info = None
         for node in script:
             if not node.string:

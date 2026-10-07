@@ -91,16 +91,79 @@ class TouTiaoAuth:
         return cls(cookie_str, **kwargs)
 
     @classmethod
-    def from_browser_login(cls, timeout_seconds: int = 600) -> "TouTiaoAuth":
-        """在独立可见的浏览器窗口登录，返回仅驻留内存的网页会话。"""
-        from builder.browser_login import browser_login
+    def from_qrcode_login(
+        cls,
+        timeout_seconds: int = 600,
+        *,
+        poll_interval: float = 1.0,
+        service: str = "https://mp.toutiao.com/profile_v4/",
+        on_qrcode=None,
+        session: requests.Session | None = None,
+    ) -> "TouTiaoAuth":
+        """用纯 HTTP 获取二维码并轮询登录状态。
 
-        return browser_login(cls, timeout_seconds=timeout_seconds)
+        ``on_qrcode`` 接收一个 ``QRCodeChallenge``。调用方自行把其
+        ``image_data_uri`` 展示给本人扫码；本库不启动浏览器、不读取浏览器
+        配置，也不自动处理滑块等人机验证。
+        """
+        from builder.passport import TouTiaoPassport
+
+        auth = cls(session=session)
+        passport = TouTiaoPassport(auth.session, service=service)
+        try:
+            challenge = passport.get_qrcode()
+            if on_qrcode is not None:
+                on_qrcode(challenge)
+            else:
+                # 不打印二维码内容本身，避免把大段 base64 淹没终端；调用方
+                # 可以通过返回对象的 on_qrcode 回调或 QRCodeChallenge.save() 展示。
+                print("已获取头条二维码，请用 on_qrcode 回调展示后扫码。")
+            passport.wait_qrcode(
+                challenge,
+                timeout_seconds=timeout_seconds,
+                poll_interval=poll_interval,
+            )
+            auth._prepare_creator_cookies_from_session(verified=True)
+            if not auth.creator_cookie:
+                raise RuntimeError("Toutiao SSO confirmed but no creator Cookie was set")
+            return auth
+        except Exception:
+            auth.close()
+            raise
+        finally:
+            passport.close()
 
     @classmethod
-    def from_qrcode_login(cls, timeout_seconds: int = 600) -> "TouTiaoAuth":
-        """兼容旧入口；浏览器页面也可选择手机验证码。"""
-        return cls.from_browser_login(timeout_seconds=timeout_seconds)
+    def from_browser_login(cls, timeout_seconds: int = 600, **kwargs) -> "TouTiaoAuth":
+        """兼容旧名称；实现为纯 HTTP 二维码轮询，不启动浏览器。"""
+        return cls.from_qrcode_login(timeout_seconds=timeout_seconds, **kwargs)
+
+    @classmethod
+    def from_sms_login(
+        cls,
+        mobile: str,
+        code: str,
+        *,
+        service: str = "https://mp.toutiao.com/profile_v4/",
+        session: requests.Session | None = None,
+        extra_params: dict | None = None,
+    ) -> "TouTiaoAuth":
+        """用调用方已取得的短信验证码完成纯 HTTP 登录。"""
+        from builder.passport import TouTiaoPassport
+
+        auth = cls(session=session)
+        passport = TouTiaoPassport(auth.session, service=service)
+        try:
+            passport.sms_login(mobile, code, extra_params=extra_params)
+            auth._prepare_creator_cookies_from_session(verified=True)
+            if not auth.creator_cookie:
+                raise RuntimeError("Toutiao SSO confirmed but no creator Cookie was set")
+            return auth
+        except Exception:
+            auth.close()
+            raise
+        finally:
+            passport.close()
 
     @classmethod
     def from_access_token(
@@ -121,6 +184,24 @@ class TouTiaoAuth:
         self.creator_cookie_str = cookie_str
         self.creator_login_verified = verified
         return self
+
+    def _prepare_creator_cookies_from_session(self, *, verified: bool = False) -> None:
+        """按 Cookie 域从 SSO requests 会话提取创作者与共享 Cookie。"""
+        creator: dict[str, str] = {}
+        shared: dict[str, str] = {}
+        for item in getattr(self.session, "cookies", ()):
+            domain = (item.domain or "").lower()
+            if domain == "mp.toutiao.com" or domain.endswith(".mp.toutiao.com"):
+                creator[item.name] = item.value
+            if domain == "toutiao.com" or domain == ".toutiao.com":
+                shared[item.name] = item.value
+
+        def serialize(values: dict[str, str]) -> str:
+            return "; ".join(f"{name}={value}" for name, value in values.items())
+        if creator:
+            self.prepare_creator_auth(serialize(creator), verified=verified)
+        if shared:
+            self.prepare_auth(serialize(shared))
 
     # 原仓库公开方法拼写有误；保留它供旧调用方使用。
     def perepare_auth(self, cookie_str: str) -> "TouTiaoAuth":

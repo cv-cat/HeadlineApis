@@ -1,2 +1,0 @@
--r requirements.txt
-playwright>=1.50,<2

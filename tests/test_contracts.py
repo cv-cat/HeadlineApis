@@ -215,7 +215,7 @@ class ReadContractTest(unittest.TestCase):
             api.item("https://example.test/article/123/", auth)
         self.assertEqual(len(http.calls), 1)
 
-    def test_group_search_result_uses_rendered_canonical_video(self):
+    def test_group_search_result_uses_http_canonical_video(self):
         state = {"data": {"initialVideo": {"videoPlayInfo": {"dynamic_video": {
             "dynamic_video_list": [{
                 "main_url": "https://v1-web.toutiaovod.com/video-stream",
@@ -230,19 +230,15 @@ class ReadContractTest(unittest.TestCase):
             '</script>'
             f'<script id="RENDER_DATA">{quote(json.dumps(state))}</script>'
         )
-        http = FakeSession([FakeResponse(text="<html>JSVM</html>")])
+        http = FakeSession([
+            FakeResponse(status=302, headers={"Location": "/video/123/"}),
+            FakeResponse(text=video_html),
+        ])
         api = TouTiaoApi(session=http)
-        rendered = []
-
-        def render(url, auth):
-            rendered.append(url)
-            return video_html, "https://www.toutiao.com/video/123/"
-
-        api._render_work_page = render
         auth = TouTiaoAuth.from_cookie("ttwid=own-cookie")
         result = api.item("https://www.toutiao.com/group/123/", auth)
-        self.assertEqual(rendered, ["https://www.toutiao.com/article/123/"])
         self.assertEqual(http.calls[0][1], "https://www.toutiao.com/article/123/")
+        self.assertEqual(http.calls[1][1], "https://www.toutiao.com/video/123/")
         self.assertFalse(http.calls[0][2]["allow_redirects"])
         self.assertEqual(result["url"], "https://www.toutiao.com/video/123/")
         self.assertEqual(result["type"], "video")
