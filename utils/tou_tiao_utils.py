@@ -1,7 +1,4 @@
-import subprocess
 import time
-from functools import partial
-subprocess.Popen = partial(subprocess.Popen, encoding="utf-8")
 import execjs
 import sys
 import random

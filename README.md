@@ -10,8 +10,8 @@
 | 可见浏览器登录 | `TouTiaoAuth.from_browser_login`；旧名 `from_qrcode_login` 保留 | 独立 Chromium 打开头条创作者登录页，在官方页面选择二维码或手机验证码；登录后只读检查创作者首页、新 Cookie 与登录状态接口。本地假浏览器契约测试通过，真实辅助流程待验证 |
 | 头条号网页状态与草稿 | `TouTiaoCreatorWebApi.is_logged_in`、`has_account_auth`、`list_drafts`、`delete_draft` | 本人已登录页面观察到实际 GET，以及指定草稿删除 POST 的成功响应；Python Cookie 客户端通过契约测试，真实账号在 Python 中待验证。`delete_draft` 会永久删除指定草稿 |
 | 头条 OAuth 授权与续期 | `TouTiaoOAuth.authorize_url`、`exchange_code`、`refresh_access_token` | 官方端点有文档，mock 请求测试通过；真实授权未验证 |
-| 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测返回 6 个头条作品链接；当前只支持第 0 页，后续页明确报错，避免把重复首页当成翻页结果 |
-| Item 详情 | `TouTiaoApi.item`、旧 `get_work_info` | 接受 `https://www.toutiao.com/article/{id}/`、`video/{id}/`、`item/{id}/`、`group/{id}/`；解析契约测试通过，线上详情页面待验证 |
+| 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测能提取作品链接，数量随页面变化；当前只支持第 0 页，后续页明确报错，避免把重复首页当成翻页结果 |
+| Item 详情 | `TouTiaoApi.item`、旧 `get_work_info` | 2026-10-07 匿名实测搜索→Item 同一脚本跑通：搜索给出 `/group/{id}/`，归一到 `/article/{id}/`，浏览器最终跳转真实 `/video/{id}/`；返回非空标题、简介、缩略图及分离音视频流。浏览器回退需安装 Playwright 与 Chromium |
 | 用户页、作品列表、视频直链 | `TouTiaoApi` 原有方法 | 保留兼容入口；本轮没有账号级线上测试 |
 | 视频上传 | `TouTiaoCreatorApi.upload_video` | 官方端点和表单字段有文档，mock 请求测试通过；真实上传未验证 |
 | 视频发布 | `TouTiaoCreatorApi.publish_video` | 官方端点已确认；官方页面目前未给完整请求体字段，`video_id`/`text` 约定待真实授权账号验证 |
@@ -50,6 +50,27 @@ with TouTiaoAuth.from_cookie(cookie_str) as auth:
     article = api.item("https://www.toutiao.com/article/1234567890/", auth)
     legacy = api.getSearchInfo("人工智能", 0, auth)  # (success, msg, HTML)
 ```
+
+### 搜索到详情
+
+搜索页可能返回 `/group/{id}/`，而该地址现在只返回空壳。`item()` 会用同一 ID 的文章路径读取；普通 HTTP 页面若只有 JSVM 代码而没有 JSON-LD，会用独立无头 Chromium 渲染。重定向到视频页后按实际 `VideoObject` 解析，返回最终 `url` 和 `type`。浏览器只接收 `auth.cookie` 中属于头条网页的 Cookie；HTTP 请求只跟随头条作品 URL 的重定向。安装浏览器依赖：
+
+```bash
+pip install -r requirements-browser.txt
+python -m playwright install chromium
+```
+
+2026-10-07 匿名只读实测：`search("咖啡", 0, TouTiaoAuth())` 返回 7 条，其中首条 `/group/7163944926747886080/` 交给 `item()` 后得到 `/video/7163944926747886080/`、非空标题和简介、1 张缩略图、4 条视频流与 1 条音频流。数量与可用性会随平台页面变化。可用下列代码自行验证结构，不需要打印正文或 Cookie：
+
+```python
+auth = TouTiaoAuth()
+api = TouTiaoApi()
+result = api.search("咖啡", 0, auth)
+item = api.item(result["items"][0]["url"], auth)
+assert item["title"] and item["content"]
+```
+
+`item["videos"]` 只放页面明确给出的单文件 `contentUrl`。当前视频页的播放器使用 `blob:` 地址，旧 `get_video_url(video_id)` 对实测视频返回空 `video_list`；不能把 `blob:` 当成下载地址。`item["media_streams"]` 从页面 `RENDER_DATA` 提取独立视频和音频流，URL 可能过期，使用时需自行选择画质并合流；仓库尚未实现成品视频文件下载。网页登录后的 Cookie 可以传给读取接口，但本次搜索→Item 在线验收使用匿名会话，未验证从独立登录窗口取得的 Cookie 在详情页的行为。
 
 ### 创作者网页登录：二维码或手机验证码
 
@@ -169,4 +190,4 @@ python -m unittest discover -s tests -v
 python -m compileall -q builder tou_tiao_api.py tou_tiao_creator_api.py main.py
 ```
 
-测试使用假会话和假浏览器，不发送真实作品。匿名搜索首页与网页登录状态已做只读实测；真实 Python Cookie 会话、OAuth、详情、上传与发布需要对应账号在受控环境逐项实测。搜索分页在线返回重复作品，当前已禁止后续页请求。`.env` 已从版本追踪移除并忽略；使用 `.env.example` 查看变量名，不要提交 Cookie、Token 或 `client_secret`。
+测试使用假会话和假浏览器，不发送真实作品。匿名搜索→Item 已在同一 Python 脚本中只读实测；真实 Python Cookie 会话、OAuth、上传与发布仍需对应账号在受控环境逐项实测。搜索分页在线返回重复作品，当前已禁止后续页请求。`.env` 已从版本追踪移除并忽略；使用 `.env.example` 查看变量名，不要提交 Cookie、Token 或 `client_secret`。

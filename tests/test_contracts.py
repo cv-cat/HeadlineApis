@@ -1,3 +1,5 @@
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,10 +13,12 @@ from tou_tiao_creator_api import TouTiaoCreatorApi
 
 
 class FakeResponse:
-    def __init__(self, *, text="", json_data=None, status=200):
+    def __init__(self, *, text="", json_data=None, status=200, headers=None):
         self.text = text
         self.json_data = json_data
         self.status = status
+        self.status_code = status
+        self.headers = headers or {}
 
     def raise_for_status(self):
         if self.status >= 400:
@@ -203,11 +207,88 @@ class ReadContractTest(unittest.TestCase):
         api = TouTiaoApi(session=http)
         auth = TouTiaoAuth.from_cookie("ttwid=abc")
         result = api.item("https://www.toutiao.com/article/123/", auth)
+        self.assertEqual(result["type"], "article")
         self.assertEqual(result["images"], ["https://img.test/a.jpg"])
         self.assertEqual(result["content"], "正文")
         with self.assertRaises(ValueError):
             api.item("https://example.test/article/123/", auth)
         self.assertEqual(len(http.calls), 1)
+
+    def test_group_search_result_uses_rendered_canonical_video(self):
+        state = {"data": {"initialVideo": {"videoPlayInfo": {"dynamic_video": {
+            "dynamic_video_list": [{
+                "main_url": "https://v1-web.toutiaovod.com/video-stream",
+                "video_meta": {"definition": "720p", "vwidth": 1280, "vheight": 720},
+            }],
+            "dynamic_audio_list": [{"main_url": "https://v1-web.toutiaovod.com/audio-stream"}],
+        }}}}}
+        video_html = (
+            '<script type="application/ld+json">'
+            '{"@type":"VideoObject","name":"视频标题",'
+            '"description":"视频简介","thumbnailUrl":"https://img.test/cover.jpg"}'
+            '</script>'
+            f'<script id="RENDER_DATA">{quote(json.dumps(state))}</script>'
+        )
+        http = FakeSession([FakeResponse(text="<html>JSVM</html>")])
+        api = TouTiaoApi(session=http)
+        rendered = []
+
+        def render(url, auth):
+            rendered.append(url)
+            return video_html, "https://www.toutiao.com/video/123/"
+
+        api._render_work_page = render
+        auth = TouTiaoAuth.from_cookie("ttwid=own-cookie")
+        result = api.item("https://www.toutiao.com/group/123/", auth)
+        self.assertEqual(rendered, ["https://www.toutiao.com/article/123/"])
+        self.assertEqual(http.calls[0][1], "https://www.toutiao.com/article/123/")
+        self.assertFalse(http.calls[0][2]["allow_redirects"])
+        self.assertEqual(result["url"], "https://www.toutiao.com/video/123/")
+        self.assertEqual(result["type"], "video")
+        self.assertEqual((result["title"], result["content"]), ("视频标题", "视频简介"))
+        self.assertEqual(result["images"], ["https://img.test/cover.jpg"])
+        self.assertEqual(result["videos"], [])
+        self.assertEqual(result["media_streams"]["video"][0]["vheight"], 720)
+        self.assertEqual(
+            result["media_streams"]["audio"][0]["url"],
+            "https://v1-web.toutiaovod.com/audio-stream",
+        )
+
+    def test_item_follows_same_site_redirect_and_rejects_external_redirect(self):
+        video_html = (
+            '<script type="application/ld+json">'
+            '{"@type":"VideoObject","name":"视频",'
+            '"description":"简介","contentUrl":"https://media.test/video.mp4"}'
+            '</script>'
+        )
+        http = FakeSession([
+            FakeResponse(status=302, headers={"Location": "/video/123/"}),
+            FakeResponse(text=video_html),
+        ])
+        result = TouTiaoApi(session=http).item(
+            "https://www.toutiao.com/article/123/", TouTiaoAuth()
+        )
+        self.assertEqual(result["type"], "video")
+        self.assertEqual(result["videos"], ["https://media.test/video.mp4"])
+        self.assertEqual(len(http.calls), 2)
+
+        http = FakeSession([
+            FakeResponse(status=302, headers={"Location": "https://example.test/item/123/"})
+        ])
+        with self.assertRaisesRegex(ValueError, "HTTPS toutiao.com"):
+            TouTiaoApi(session=http).item(
+                "https://www.toutiao.com/article/123/", TouTiaoAuth.from_cookie("ttwid=own-cookie")
+            )
+        self.assertEqual(len(http.calls), 1)
+
+    def test_import_does_not_replace_subprocess_popen_class(self):
+        self.assertIsInstance(subprocess.Popen, type)
+
+    def test_legacy_video_endpoint_reports_absent_single_file(self):
+        response = FakeResponse(text='tt__video__9n4f3t({"data":{"video_list":[]}})')
+        api = TouTiaoApi(session=FakeSession([response]))
+        with self.assertRaisesRegex(ValueError, "no single-file URL"):
+            api.get_video_url("public-video-id", TouTiaoAuth())
 
 
 class CreatorContractTest(unittest.TestCase):
