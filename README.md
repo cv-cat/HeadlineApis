@@ -8,13 +8,13 @@
 | --- | --- | --- |
 | Cookie 会话 | `TouTiaoAuth.from_cookie`、`prepare_auth` | 2026-10-07 将本人已登录 Chrome 的请求 Cookie 仅在内存导入同一 Python 进程，创作者登录状态、搜索、Item 均在线通过；独立网页登录辅助窗口产生的 Cookie 仍待实测 |
 | 可见浏览器登录 | `TouTiaoAuth.from_browser_login`；旧名 `from_qrcode_login` 保留 | 独立 Chromium 打开头条创作者登录页，在官方页面选择二维码或手机验证码；登录后只读检查创作者首页、新 Cookie 与登录状态接口。本地假浏览器契约测试通过，真实辅助流程待验证 |
-| 头条号网页状态与草稿 | `TouTiaoCreatorWebApi.is_logged_in`、`has_account_auth`、`list_drafts`、`delete_draft` | `is_logged_in()` 已用本人 Chrome 请求 Cookie 在 Python 在线返回 true；页面观察到草稿 GET 与指定草稿删除 POST 的成功响应，`list_drafts()` 的 Python 实测仍待完成。`delete_draft` 会永久删除指定草稿 |
+| 头条号网页状态与草稿 | `TouTiaoCreatorWebApi.is_logged_in`、`has_account_auth`、`list_drafts`、`delete_draft` | `is_logged_in()` 已用本人 Chrome 请求 Cookie 在 Python 在线返回 true；网页草稿 GET 与指定草稿删除 POST 已观察到成功响应。`delete_draft` 会永久删除指定草稿 |
 | 头条 OAuth 授权与续期 | `TouTiaoOAuth.authorize_url`、`exchange_code`、`refresh_access_token` | 官方端点有文档，mock 请求测试通过；真实授权未验证 |
 | 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测能提取作品链接，数量随页面变化；当前只支持第 0 页，后续页明确报错，避免把重复首页当成翻页结果 |
 | Item 详情 | `TouTiaoApi.item`、旧 `get_work_info` | 2026-10-07 匿名实测搜索→Item 同一脚本跑通：搜索给出 `/group/{id}/`，归一到 `/article/{id}/`，浏览器最终跳转真实 `/video/{id}/`；返回非空标题、简介、缩略图及分离音视频流。浏览器回退需安装 Playwright 与 Chromium |
 | 用户页、作品列表、视频直链 | `TouTiaoApi` 原有方法 | 保留兼容入口；本轮没有账号级线上测试 |
-| 视频上传 | `TouTiaoCreatorApi.upload_video` | 官方端点和表单字段有文档，mock 请求测试通过；真实上传未验证 |
-| 视频发布 | `TouTiaoCreatorApi.publish_video` | 官方端点已确认；官方页面目前未给完整请求体字段，`video_id`/`text` 约定待真实授权账号验证 |
+| 视频上传 | `TouTiaoCreatorApi.upload_video` | 官方端点和表单字段有文档，mock 请求测试通过；网页上传已用 3 秒自生成测试视频实测成功 |
+| 视频发布 | `TouTiaoCreatorApi.publish_video`；网页端为创作者页面流程 | 网页端已用本人账号提交 1 条 3 秒自生成测试视频，作品管理显示标题“头条接口联调测试”、状态“审核中”；网页请求 `POST /xigua/api/upload/PublishVideo` 返回 HTTP 200。Open API 的 `video_id`/`text` 请求体仍需 OAuth 账号单独验证 |
 | 已发布视频列表 | `TouTiaoCreatorApi.list_videos` | 官方端点已确认；分页参数参考公开 SDK，真实账号待验证 |
 | 特定视频数据 | `TouTiaoCreatorApi.get_video_data` | 官方端点已确认；请求体由调用方提供，字段待验证 |
 | 图文、微头条发布 | `publish_article` 明确抛出 `NotImplementedError` | 官方头条发布接入方案明确目前只支持小视频；创作者网页私有接口待单独验证 |
@@ -111,7 +111,7 @@ with TouTiaoAuth.from_browser_login() as auth:
 # 明确选定自己的草稿后，才调用 web.delete_draft(draft["gid"], draft_type=draft["draft_type"])
 ```
 
-`has_account_auth()` 只在接口 `code=0` 时读取布尔标志，其他业务码会抛出 `CreatorWebApiError`。本次账号曾出现“请完善账号信息”提示，随后页面明确显示“账号信息已完善，已为你解锁发布文章、视频等权益功能”；但后来独立 GET `/mp/agw/media/check_user_auth` 仍返回 HTTP 200、`code=100002`、`has_auth=false`。这个非零业务码的语义尚未确认，不能以其中的 `has_auth` 推断当前发文权限。编辑器可打开，公开发布未验收。上述网页 Cookie 也不能替代 Creator Open API OAuth 授权。
+`has_account_auth()` 只在接口 `code=0` 时读取布尔标志，其他业务码会抛出 `CreatorWebApiError`。本次账号曾出现“请完善账号信息”提示，随后页面明确显示“账号信息已完善，已为你解锁发布文章、视频等权益功能”；但后来独立 GET `/mp/agw/media/check_user_auth` 仍返回 HTTP 200、`code=100002`、`has_auth=false`。这个非零业务码的语义尚未确认，不能以其中的 `has_auth` 推断当前发文权限。之后用网页创作页实际提交了 1 条中性测试视频，作品管理回显状态“审核中”；证据见 `headline_publish/public_video_acceptance.md`。上述网页 Cookie 也不能替代 Creator Open API OAuth 授权。
 
 在本人网页编辑器输入中性临时内容时，页面自动请求 `POST /mp/agw/article/publish`，表单含 `save=0`，响应 `code=0` 和 `data.pgc_id`；随后草稿列表出现对应 `gid`，二者相同。删除该临时草稿时，网页请求 `POST /mp/agw/creator_center/delete_draft?app_id=1231`，JSON body 为 `{"drafts":[{"draft_type":2,"gid":"所选草稿 ID"}]}`，返回 `code=0`；再次读取草稿列表，临时草稿已消失。`delete_draft(gid, draft_type=...)` 仅封装这一指定草稿删除请求，参数应来自同一条草稿记录，调用后不可恢复。自动保存请求带页面生成的签名参数及多项编辑器状态，尚未建立可靠的独立请求契约；仓库不封装网页草稿写入或图文公开发布。
 
@@ -183,7 +183,7 @@ auth.close()
 | `POST https://open.douyin.com/toutiao/video/data/` | [官方特定视频数据文档](https://open.douyin.com/platform/resource/docs/openapi/video-management/toutiao/search-video/video-data/)；请求字段显示“暂无数据” |
 | 图文发布范围 | [官方头条内容发布接入方案](https://open.douyin.com/platform/resource/docs/ability/content-management/toutiao-publish-solution/)说明开放接口暂不支持头条文章、微头条 |
 
-创作者网页自动保存时确实调用了 `/mp/agw/article/publish`，本次只确认 `save=0`、响应 `pgc_id` 与草稿列表 `gid` 的关联；不能把该路径名或一次草稿结果解释为公开发布已验收。该请求有页面生成的签名参数和多项编辑器字段，仓库没有封装网页写入。先前的[公开项目协议记录](https://github.com/xc-2000/toutiao-auto-publisher/blob/main/README.md)只作背景参考。
+创作者网页自动保存时确实调用了 `/mp/agw/article/publish`，本次只确认 `save=0`、响应 `pgc_id` 与草稿列表 `gid` 的关联；该草稿契约仍未抽象为独立写入 API。网页视频公开提交则实际调用 `/xigua/api/upload/PublishVideo`，同一次浏览器会话还完成了视频上传、首帧封面截取和作品管理回读；请求带页面动态令牌与签名，仓库不把它伪装成稳定的独立 HTTP 方法。先前的[公开项目协议记录](https://github.com/xc-2000/toutiao-auto-publisher/blob/main/README.md)只作背景参考。
 
 ## 验证
 
