@@ -193,3 +193,6 @@ python -m compileall -q builder tou_tiao_api.py tou_tiao_creator_api.py main.py
 ```
 
 测试使用假会话，不启动浏览器或发送真实作品。纯 HTTP ttwid 注册→搜索→Item 已在同一 Python 脚本中只读实测；SSO 二维码获取/轮询、短信请求的 HTTP 契约有单元覆盖，真实扫码或短信仍需本人在受控环境完成。搜索分页在线返回重复作品，当前已禁止后续页请求。`.env` 已从版本追踪移除并忽略；使用 `.env.example` 查看变量名，不要提交 Cookie、Token 或 `client_secret`。
+
+Detailed sanitized field evidence: docs/headline_article_capture_20261011.md.
+
