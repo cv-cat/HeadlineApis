@@ -16,6 +16,14 @@ ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
 WORK_PATH_RE = re.compile(r"/(?:article|video|item|group)/\d+/?")
 
 
+class SearchRiskChallenged(RuntimeError):
+    """搜索页返回 shark 风控挑战壳（ala-data challenge_code），没有结果。"""
+
+
+class WorkPageRiskChallenged(RuntimeError):
+    """作品页返回 JSVM 挑战壳，未携带公开 JSON-LD 数据。"""
+
+
 class TouTiaoApi:
     base_url = "https://so.toutiao.com"
 
@@ -65,6 +73,13 @@ class TouTiaoApi:
                 seen.add(url)
                 items.append({"url": url, "title": link.get_text(" ", strip=True)})
         found_id = re.search(r'search_id\s*:\s*"([A-Z0-9]{20,})"', response.text)
+        if not items and 'data-for="ala-data"' in response.text and "challenge_code" in response.text:
+            # 2026-10-23 起匿名请求可能收到 shark 挑战壳：无结果链接，仅有
+            # 挑战卡片数据。显式报错，不把挑战页当成空结果返回。
+            raise SearchRiskChallenged(
+                "搜索页被平台风控挑战拦截（ala-data challenge_code）；"
+                "需要登录 Cookie，或降低请求频率后重试"
+            )
         return {
             "raw_html": response.text,
             "items": items,
@@ -292,6 +307,13 @@ class TouTiaoApi:
         soup = BeautifulSoup(html, 'html.parser')
         script = soup.find_all('script', type="application/ld+json")
         if not script:
+            if "_$jsvmprt" in html:
+                # 2026-10-23 起匿名作品页可能只返回 JSVM 挑战壳（空 body +
+                # jsvmp 引导脚本）；显式报风控，不与契约变化混为一谈。
+                raise WorkPageRiskChallenged(
+                    "作品页返回 JSVM 挑战壳，没有公开 JSON-LD 数据；"
+                    "匿名请求被平台风控拦截，需要登录 Cookie"
+                )
             raise ValueError(
                 "work page did not expose JSON-LD over HTTP; "
                 "ttwid registration or the public page contract changed"

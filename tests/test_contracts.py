@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, quote, urlparse
 import requests
 
 from builder.auth import OpenApiError, TouTiaoAuth, TouTiaoOAuth
-from tou_tiao_api import TouTiaoApi
+from tou_tiao_api import SearchRiskChallenged, TouTiaoApi, WorkPageRiskChallenged
 from tou_tiao_creator_api import TouTiaoCreatorApi
 from tou_tiao_creator_web_api import TouTiaoCreatorWebApi
 
@@ -198,6 +198,30 @@ class ReadContractTest(unittest.TestCase):
         self.assertIn("only page_num=0", message)
         self.assertIsNone(data)
         self.assertEqual(http.calls, [])
+
+    def test_search_reports_risk_challenge_shell_instead_of_empty_items(self):
+        # 2026-10-23 实测：匿名搜索可能只返回 ala-data 挑战壳，无结果链接。
+        html = ('<script data-for="ala-data" data-p="0">window.T && (T.qf || T.flow) && '
+                '(T.qf || T.flow).call(T,{ data: {"challenge_code":1366,"keyword":"咖啡"} });'
+                '</script>')
+        http = FakeSession([FakeResponse(text=html), FakeResponse(text=html)])
+        api = TouTiaoApi(session=http)
+        with self.assertRaisesRegex(SearchRiskChallenged, "风控"):
+            api.search("咖啡", 0, TouTiaoAuth())
+        success, message, data = api.getSearchInfo("咖啡", 0, TouTiaoAuth())
+        self.assertFalse(success)
+        self.assertIn("风控", message)
+        self.assertIsNone(data)
+
+    def test_item_reports_jsvm_shell_as_risk_challenge(self):
+        # 2026-10-23 实测：匿名作品页可能只返回空 body + jsvmp 引导脚本。
+        html = ('<html><head><meta charset="UTF-8" /></head><body></body>'
+                '<script>var glb;_$jsvmprt=function(b,e,f){function a(){return!0}};</script></html>')
+        http = FakeSession([FakeResponse(text=html)])
+        api = TouTiaoApi(session=http)
+        auth = TouTiaoAuth.from_cookie("ttwid=abc")
+        with self.assertRaisesRegex(WorkPageRiskChallenged, "JSVM"):
+            api.item("https://www.toutiao.com/article/123/", auth)
 
     def test_search_extracts_current_jump_link(self):
         target = "https://toutiao.com/group/123/"

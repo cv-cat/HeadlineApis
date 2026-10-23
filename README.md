@@ -10,8 +10,8 @@
 | 纯 HTTP 登录 | `TouTiaoPassport`、`TouTiaoAuth.from_qrcode_login`、`from_sms_login` | 已按独立 Chrome 的 Network 证据对齐 SSO 二维码获取/轮询和短信验证码请求；二维码由 `on_qrcode` 回调交给调用方展示，滑块挑战只返回 `CaptchaRequired`，不执行自动化绕过 |
 | 头条号网页状态与草稿 | `TouTiaoCreatorWebApi.is_logged_in`、`has_account_auth`、`list_drafts`、`delete_draft` | `is_logged_in()` 已用本人 Chrome 请求 Cookie 在 Python 在线返回 true；网页草稿 GET 与指定草稿删除 POST 已观察到成功响应。`delete_draft` 会永久删除指定草稿 |
 | 头条 OAuth 授权与续期 | `TouTiaoOAuth.authorize_url`、`exchange_code`、`refresh_access_token` | 官方端点有文档，mock 请求测试通过；真实授权未验证 |
-| 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 匿名首页实测能提取作品链接，数量随页面变化；当前只支持第 0 页，后续页明确报错，避免把重复首页当成翻页结果 |
-| Item 详情 | `TouTiaoApi.item`、旧 `get_work_info` | 2026-10-07 纯 HTTP 实测搜索→Item 跑通：先调用公开 ttwid 注册接口，再跟随同站跳转到真实 `/video/{id}/`；JSON-LD 与 `RENDER_DATA` 均由 Python 解析，返回非空标题、简介、缩略图及分离音视频流 |
+| 搜索 | `TouTiaoApi.search`、旧 `getSearchInfo` | 2026-10-11 匿名首页实测可提取作品链接；2026-10-23 起匿名请求可能收到 shark 风控挑战壳（无结果链接、`ala-data challenge_code`），此时显式抛 `SearchRiskChallenged`，需要登录 Cookie。当前只支持第 0 页，后续页明确报错，避免把重复首页当成翻页结果 |
+| Item 详情 | `TouTiaoApi.item`、旧 `get_work_info` | 2026-10-07 纯 HTTP 实测搜索→Item 跑通：先调用公开 ttwid 注册接口，再跟随同站跳转到真实 `/video/{id}/`；JSON-LD 与 `RENDER_DATA` 均由 Python 解析，返回非空标题、简介、缩略图及分离音视频流。2026-10-23 起匿名作品页可能只返回 JSVM 挑战壳（空 body + `_$jsvmprt`），此时显式抛 `WorkPageRiskChallenged`；带自动注册 ttwid 请求已验证存在的作品也可能直接 404，这是风控表现而非作品删除，均需要登录 Cookie |
 | 用户页、作品列表、视频直链 | `TouTiaoApi` 原有方法 | 保留兼容入口；本轮没有账号级线上测试 |
 | 视频上传 | `TouTiaoCreatorApi.upload_video` | 官方端点和表单字段有文档，mock 请求测试通过；网页上传已用 3 秒自生成测试视频实测成功 |
 | 视频发布 | `TouTiaoCreatorApi.publish_video`；网页端为创作者页面流程 | 网页端已用本人账号提交 1 条 3 秒自生成测试视频，作品管理显示标题“头条接口联调测试”、状态“审核中”；网页请求 `POST /xigua/api/upload/PublishVideo` 返回 HTTP 200。Open API 的 `video_id`/`text` 请求体仍需 OAuth 账号单独验证 |
@@ -61,6 +61,8 @@ with TouTiaoAuth.from_cookie(cookie_str) as auth:
 ### 搜索到详情
 
 搜索页可能返回 `/group/{id}/`，而该地址现在只返回空壳。`item()` 会用同一 ID 的文章路径读取；纯 HTTP 会话在首次作品请求前调用公开 ttwid 注册与回调接口，随后只跟随头条同站重定向。最终页面的 `VideoObject`、`RENDER_DATA` 由 Python 解析，遇到未包含 JSON-LD 的响应会直接报告协议变化，不启动脚本渲染器。
+
+2026-10-23 平台风控状态：匿名搜索页可能只返回 ala-data 挑战壳（`challenge_code`，shark 风控引擎），`search()` 抛 `SearchRiskChallenged`；匿名作品页可能只返回空 body + `_$jsvmprt` JSVM 壳，`item()` 抛 `WorkPageRiskChallenged`；带自动注册 ttwid 请求热榜确认存在的作品也可能 404。三类都是风控拦截而非协议变化或作品删除，需要登录 Cookie。公开热榜 `GET www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc` 匿名仍可用，可作为标题/ID 的备用只读来源。
 
 2026-10-07 匿名只读实测：`search("咖啡", 0, TouTiaoAuth())` 返回 7 条，其中首条 `/group/7163944926747886080/` 交给 `item()` 后得到 `/video/7163944926747886080/`、非空标题和简介、1 张缩略图、4 条视频流与 1 条音频流。数量与可用性会随平台页面变化。可用下列代码自行验证结构，不需要打印正文或 Cookie：
 
