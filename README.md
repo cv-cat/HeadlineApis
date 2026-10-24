@@ -62,7 +62,9 @@ with TouTiaoAuth.from_cookie(cookie_str) as auth:
 
 搜索页可能返回 `/group/{id}/`，而该地址现在只返回空壳。`item()` 会用同一 ID 的文章路径读取；纯 HTTP 会话在首次作品请求前调用公开 ttwid 注册与回调接口，随后只跟随头条同站重定向。最终页面的 `VideoObject`、`RENDER_DATA` 由 Python 解析，遇到未包含 JSON-LD 的响应会直接报告协议变化，不启动脚本渲染器。
 
-2026-10-23 平台风控状态：匿名搜索页可能只返回 ala-data 挑战壳（`challenge_code`，shark 风控引擎），`search()` 抛 `SearchRiskChallenged`；匿名作品页可能只返回空 body + `_$jsvmprt` JSVM 壳，`item()` 抛 `WorkPageRiskChallenged`；带自动注册 ttwid 请求热榜确认存在的作品也可能 404。三类都是风控拦截而非协议变化或作品删除，需要登录 Cookie。公开热榜 `GET www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc` 匿名仍可用，可作为标题/ID 的备用只读来源。
+2026-10-23 平台风控状态：匿名搜索页可能只返回 ala-data 挑战壳（`challenge_code`，shark 风控引擎），`search()` 抛 `SearchRiskChallenged`；匿名作品页可能只返回空 body + `_$jsvmprt` JSVM 壳，`item()` 抛 `WorkPageRiskChallenged`；带自动注册 ttwid 请求热榜确认存在的作品也可能 404。公开热榜 `GET www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc` 匿名仍可用，可作为标题/ID 的备用只读来源。
+
+2026-10-25 补充：用真实扫码登录的完整 28-Cookie 会话实测，上述搜索挑战与作品页 404 **仍然触发**——读取侧风控是环境级（IP/指纹），登录 Cookie 不豁免，恢复读取需更换出口环境。创作者侧不受影响：同一 Cookie 在独立进程中 `is_logged_in()=true`、`list_drafts()` 正常。QR 登录链（`get_qrcode/` → `check_qrconnect/` 1s 轮询 → status "3" 带 ticket `redirect_url` → `passport/sso/login/callback/` → 302 落地）已由真实抓包逐参数确证，与 `TouTiaoPassport.wait_qrcode()` 实现一致；证据 `working_dir/platform_api_rework/continue_20261023/login_chain_findings.md`。另注意：本机 Charles 作为系统代理时 Python `requests` 会因 MITM 证书校验失败，独立进程请用 `session.trust_env = False` 直连。
 
 2026-10-07 匿名只读实测：`search("咖啡", 0, TouTiaoAuth())` 返回 7 条，其中首条 `/group/7163944926747886080/` 交给 `item()` 后得到 `/video/7163944926747886080/`、非空标题和简介、1 张缩略图、4 条视频流与 1 条音频流。数量与可用性会随平台页面变化。可用下列代码自行验证结构，不需要打印正文或 Cookie：
 
