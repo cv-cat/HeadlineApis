@@ -176,9 +176,27 @@ class TouTiaoApi:
         try:
             state = json.loads(unquote(node.string))
             play = state["data"]["initialVideo"]["videoPlayInfo"]
-            dynamic = play["dynamic_video"]
         except (KeyError, TypeError, json.JSONDecodeError):
             return streams
+        # 2026-11-18 契约：videoPlayInfo.video_list 是整档下载地址（main_url
+        # 直指 toutiaovod mp4，实测 200/ftypisom）；dynamic_video 分离流是旧
+        # 契约，部分页面已不再下发——两者都读，互不覆盖。
+        for entry in play.get("video_list", []) if isinstance(play, dict) else []:
+            if not isinstance(entry, dict):
+                continue
+            url = entry.get("main_url")
+            if not isinstance(url, str) or urlparse(url).scheme != "https" or not urlparse(url).hostname:
+                continue
+            meta = entry.get("video_meta") or {}
+            stream = {"url": url}
+            if isinstance(meta, dict):
+                for key in ("definition", "vwidth", "vheight", "codec_type", "quality_type"):
+                    if key in meta:
+                        stream[key] = meta[key]
+            if entry.get("quality_type") is not None:
+                stream.setdefault("quality_type", entry.get("quality_type"))
+            streams["video"].append(stream)
+        dynamic = play.get("dynamic_video") if isinstance(play, dict) else None
         if not isinstance(dynamic, dict):
             return streams
         for kind in ("video", "audio"):
@@ -353,7 +371,14 @@ class TouTiaoApi:
             for video in soup.find_all('div', attrs={'class': 'tt-video-box'}):
                 video_id = video.get('tt-videoid')
                 if video_id:
-                    videos.append(self.get_video_url(video_id, auth))
+                    # 旧端点对部分视频没有单文件地址（页面用 blob:）：跳过而不是报错，
+                    # 分离流在 media_streams 里（2026-10-25 图文内嵌视频实测）。
+                    try:
+                        url = self.get_video_url(video_id, auth)
+                    except ValueError:
+                        continue
+                    if url:
+                        videos.append(url)
         else:
             title = info.get('name') or info.get('headline') or ''
             content = info.get('description', '')
