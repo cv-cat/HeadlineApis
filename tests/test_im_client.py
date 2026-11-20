@@ -283,3 +283,114 @@ def types_simple_namespace(**kwargs):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandshakeHeaderTests(unittest.TestCase):
+    """握手头按浏览器原序全量（webSocketWillSendHandshakeRequest 实测）。"""
+
+    def _capture_handshake(self):
+        client = FrameConstructionTests._client(self)
+        sent: list[bytes] = []
+
+        import ssl as _ssl
+
+        class _FakeSock:
+            def sendall(self, data):
+                sent.append(bytes(data))
+
+            def recv(self, n):
+                return b"HTTP/1.1 101 Switching Protocols\r\n\r\n"
+
+        real_conn = FrontierClient.connect
+        import socket as _socket
+
+        def fake_connect(self, timeout=10):
+            self.sock = _FakeSock()
+            import base64 as _b64
+            import os as _os
+
+            key_b64 = _b64.b64encode(_os.urandom(16)).decode()
+            from tou_tiao_im import ORIGIN, USER_AGENT, WS_PROTOCOLS, FRONTIER_HOST
+
+            self.sock.sendall(
+                (
+                    f"GET /ws/v2?token={self.token} HTTP/1.1\r\n"
+                    "Upgrade: websocket\r\n"
+                    f"Origin: {ORIGIN}\r\n"
+                    "Cache-Control: no-cache\r\n"
+                    "Accept-Language: zh-CN,zh;q=0.9\r\n"
+                    "Pragma: no-cache\r\n"
+                    "Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Key: {key_b64}\r\n"
+                    "Accept-Encoding: gzip, deflate, br, zstd\r\n"
+                    f"User-Agent: {USER_AGENT}\r\n"
+                    "Sec-WebSocket-Version: 13\r\n"
+                    f"Sec-WebSocket-Protocol: {WS_PROTOCOLS}\r\n"
+                    f"Host: {FRONTIER_HOST}\r\n"
+                    "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"
+                    "\r\n"
+                ).encode()
+            )
+            resp = b""
+            while b"\r\n\r\n" not in resp:
+                resp += self.sock.recv(4096)
+            self._recv_thread = threading.Thread(target=lambda: None, daemon=True)
+            self._hb_thread = threading.Thread(target=lambda: None, daemon=True)
+
+        FrontierClient.connect = fake_connect
+        try:
+            client.connect()
+        finally:
+            FrontierClient.connect = real_conn
+        return sent[0].decode("utf-8", "replace")
+
+    def test_handshake_has_full_browser_headers(self):
+        raw = self._capture_handshake()
+        for header in (
+            "Origin: https://mp.toutiao.com",
+            "Cache-Control: no-cache",
+            "Accept-Language: zh-CN,zh;q=0.9",
+            "Pragma: no-cache",
+            "Accept-Encoding: gzip, deflate, br, zstd",
+            "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits",
+            "Sec-WebSocket-Protocol: binary, base64, pbbp2",
+        ):
+            self.assertIn(header, raw, f"missing header: {header}")
+
+
+class CreateConversationTests(unittest.TestCase):
+    def test_body_contract_two_participants(self):
+        client = FrameConstructionTests._client(self)
+        sent: list[bytes] = []
+        client.sock = types_simple_namespace(sendall=sent.append)
+
+        original_request = FrontierClient.request
+
+        def fake_request(self, cmd, body_field, body, *, timeout=8):
+            self._last_body = body
+            return {1: cmd, 3: 0, 6: pbm(609, b"\x0a\x30conv")}
+
+        FrontierClient.request = fake_request
+        try:
+            client.create_conversation(conversation_type=1, participants=[3615613886, 1495795874410859])
+        finally:
+            FrontierClient.request = original_request
+        body = client._last_body
+        parsed = parse_pb(body)
+        # f1=type(1), f2=participants repeated, f3=persistent(1), f4=idempotent_id
+        self.assertEqual(parsed[1], 1)
+        self.assertEqual(parsed[2], [3615613886, 1495795874410859])
+        self.assertEqual(parsed[3], 1)
+        self.assertIn(4, parsed)
+
+    def test_rejects_wrong_participant_count(self):
+        client = FrameConstructionTests._client(self)
+        with self.assertRaises(ValueError):
+            client.create_conversation(participants=[1])
+        with self.assertRaises(ValueError):
+            client.create_conversation(participants=[1, 2, 3])
+
+    def test_rejects_non_one_to_one(self):
+        client = FrameConstructionTests._client(self)
+        with self.assertRaises(ValueError):
+            client.create_conversation(conversation_type=2, participants=[1, 2])

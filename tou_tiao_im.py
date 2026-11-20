@@ -245,6 +245,7 @@ class ImCmd:
     _ONEOF = {
         SEND_MESSAGE: 100,
         GET_MESSAGES_BY_CONVERSATION: 301,
+        CREATE_CONVERSATION_V2: 609,
         GET_TICKET: 2005,
         GET_UNREAD_COUNT: 2030,
         GET_CONVERSATION_INFO_LIST_V2: 610,
@@ -298,17 +299,24 @@ class FrontierClient:
         ctx.verify_mode = ssl.CERT_NONE
         self.sock = ctx.wrap_socket(raw, server_hostname=FRONTIER_HOST)
         key_b64 = base64.b64encode(os.urandom(16)).decode()
+        # 握手头按浏览器原序全量发送（Network.webSocketWillSendHandshakeRequest
+        # 实测抓包；服务端对 Origin/UA 等头敏感，缺头会被环境风控踢线）。
         self.sock.sendall(
             (
                 f"GET {path} HTTP/1.1\r\n"
-                f"Host: {FRONTIER_HOST}\r\n"
                 "Upgrade: websocket\r\n"
+                f"Origin: {ORIGIN}\r\n"
+                "Cache-Control: no-cache\r\n"
+                "Accept-Language: zh-CN,zh;q=0.9\r\n"
+                "Pragma: no-cache\r\n"
                 "Connection: Upgrade\r\n"
                 f"Sec-WebSocket-Key: {key_b64}\r\n"
+                "Accept-Encoding: gzip, deflate, br, zstd\r\n"
+                f"User-Agent: {USER_AGENT}\r\n"
                 "Sec-WebSocket-Version: 13\r\n"
                 f"Sec-WebSocket-Protocol: {WS_PROTOCOLS}\r\n"
-                f"Origin: {ORIGIN}\r\n"
-                f"User-Agent: {USER_AGENT}\r\n"
+                f"Host: {FRONTIER_HOST}\r\n"
+                "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"
                 "\r\n"
             ).encode()
         )
@@ -577,12 +585,13 @@ class FrontierClient:
 
         返回真实会话：conversation_id/short_id/type/ticket 等在
         ``conversation_info_list``（body 字段 1）。
-        body 契约：``sort_type=1, cursor=int64, limit=int32``。
+        body 契约：``sort_type=0, cursor=int64, limit=int32``；
+        ``limit`` 服务端上限 20（>20 返回空列表）。
         """
         if type(next_cursor) is not int or next_cursor < 0:
             raise ValueError("next_cursor must be a non-negative integer")
-        if type(limit) is not int or not 1 <= limit <= 100:
-            raise ValueError("limit must be an integer from 1 to 100")
+        if type(limit) is not int or not 1 <= limit <= 20:
+            raise ValueError("limit must be an integer from 1 to 20 (server cap)")
         body = pbi(1, 0) + pbi(2, next_cursor) + pbi(4, limit)
         resp = self.request(ImCmd.GET_USER_CONVERSATION_LIST, ImCmd._ONEOF[ImCmd.GET_USER_CONVERSATION_LIST], body)
         inner = resp.get(6)
@@ -608,6 +617,33 @@ class FrontierClient:
             + pbi(6, limit)
         )
         resp = self.request(ImCmd.GET_MESSAGES_BY_CONVERSATION, ImCmd._ONEOF[ImCmd.GET_MESSAGES_BY_CONVERSATION], body)
+        inner = resp.get(6)
+        return deep_parse(inner) if isinstance(inner, (bytes, bytearray)) else {}
+
+    def create_conversation(self, *, conversation_type: int = 1, participants: list[int], persistent: bool = True, idempotent_id: str = "") -> dict:
+        """CREATE_CONVERSATION_V2（cmd=609，2026-11-20 live 实证）。
+
+        body：``{conversation_type(f1 int32), participants(f2 repeated
+        int64), persistent(f3 bool), idempotent_id(f4 str)}``。
+        ONE_TO_ONE（type=1）需要**两个**参与者 uid（本端+对端，
+        单参与者会建出隐藏的自会话）。返回 ConversationInfoV2
+        （conversation_id/short_id/ticket）。
+        """
+        if conversation_type != 1:
+            raise ValueError("only ONE_TO_ONE (type=1) is verified")
+        if not isinstance(participants, list) or len(participants) != 2:
+            raise ValueError("ONE_TO_ONE requires exactly 2 participant uids")
+        if not all(isinstance(p, int) and p > 0 for p in participants):
+            raise ValueError("participants must be positive int uids")
+        if not idempotent_id:
+            idempotent_id = uuid.uuid4().hex
+        body = (
+            pbi(1, conversation_type)
+            + b"".join(pbi(2, p) for p in participants)
+            + pbi(3, 1 if persistent else 0)
+            + pbs(4, idempotent_id)
+        )
+        resp = self.request(ImCmd.CREATE_CONVERSATION_V2, ImCmd._ONEOF[ImCmd.CREATE_CONVERSATION_V2], body)
         inner = resp.get(6)
         return deep_parse(inner) if isinstance(inner, (bytes, bytearray)) else {}
 
