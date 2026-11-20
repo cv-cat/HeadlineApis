@@ -1,3 +1,4 @@
+import json
 import unittest
 from urllib.parse import parse_qs, urlparse
 
@@ -167,3 +168,55 @@ class WeitoutiaoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WeitoutiaoDraftTests(unittest.TestCase):
+    def _make(self, response=None):
+        calls = []
+
+        def send(url, body, referer):
+            calls.append((url, body, referer))
+            return response or {"code": 0, "gid": "1882382975576140", "message": "success"}
+
+        publisher = TouTiaoWebPublisher(
+            PublishTransport(send),
+            a_bogus_fn=lambda query, body: "AB" * 10,
+        )
+        publisher.with_token_provider(MsTokenProvider(lambda: "tok123"))
+        return publisher, calls
+
+    def test_save_weitoutiao_draft_contract(self):
+        publisher, calls = self._make()
+        gid = publisher.save_weitoutiao_draft("微头条草稿")
+        self.assertEqual(gid, "1882382975576140")
+        url, body, referer = calls[0]
+        # JSON body：draft_type=1 + draft_info JSON 字符串
+        parsed = json.loads(body)
+        self.assertEqual(parsed["draft_type"], 1)
+        self.assertEqual(parsed["post_id"], "")
+        draft_info = json.loads(parsed["draft_info"])
+        self.assertEqual(draft_info["schema"], "sslocal://send_thread")
+        self.assertEqual(draft_info["content"], "微头条草稿")
+        self.assertEqual(draft_info["images"], [])
+        self.assertIn("update_time", draft_info)
+        self.assertIn("/mp/agw/draft/save_ugc_draft", url)
+        self.assertIn("msToken=tok123", url)
+        self.assertIn("a_bogus=", url)
+        self.assertIn("weibogroup/publish", referer)
+
+    def test_save_weitoutiao_draft_rejects_empty_content(self):
+        publisher, _ = self._make()
+        with self.assertRaises(ValueError):
+            publisher.save_weitoutiao_draft("  ")
+
+    def test_save_weitoutiao_draft_raises_on_error_code(self):
+        publisher, _ = self._make({"code": 1064, "message": "bad"})
+        with self.assertRaises(PublishError) as ctx:
+            publisher.save_weitoutiao_draft("x")
+        self.assertEqual(ctx.exception.code, 1064)
+
+    def test_save_weitoutiao_draft_images_list(self):
+        publisher, calls = self._make()
+        publisher.save_weitoutiao_draft("带图", images=["http://img/1.jpg"])
+        draft_info = json.loads(json.loads(calls[0][1])["draft_info"])
+        self.assertEqual(draft_info["images"], ["http://img/1.jpg"])

@@ -67,6 +67,10 @@ class PublishTransport:
             raise ValueError("publish transport must return a mapping")
         return dict(payload)
 
+    def post_json(self, url: str, body: str, referer: str) -> dict:
+        """JSON body 的 POST。默认复用 send；实现方可按 Content-Type 分流。"""
+        return self.post(url, body, referer)
+
 
 PUBLISH_QUERY = {
     "source": "mp",
@@ -76,6 +80,7 @@ PUBLISH_QUERY = {
 }
 PUBLISH_PATH = "/mp/agw/article/publish"
 WTT_PATH = "/mp/agw/article/wtt"
+UGCDRAFT_PATH = "/mp/agw/draft/save_ugc_draft"
 WTT_QUERY = {
     "source": "mp",
     "type": "wtt",
@@ -205,3 +210,44 @@ class TouTiaoWebPublisher:
         if not isinstance(data, Mapping) or not data.get("thread_id"):
             raise ValueError("weitoutiao response has no thread_id")
         return dict(data)
+
+    def save_weitoutiao_draft(self, content: str, *, images: list[str] | None = None) -> str:
+        """存微头条草稿（POST /mp/agw/draft/save_ugc_draft，2026-11-20 实测 code=0）。
+
+        body 是 JSON ``{"draft_type": 1, "draft_info": "<JSON字符串>", "post_id": ""}``；
+        ``draft_type=1`` 即微头条（Weitoutiao 枚举），``draft_info`` 内层是
+        ``{schema: "sslocal://send_thread", content, images, update_time: <unix秒>}``。
+        返回新草稿 gid。
+        """
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("content must be non-empty")
+        draft_info = {
+            "schema": "sslocal://send_thread",
+            "content": content.strip(),
+            "images": list(images or []),
+            "update_time": int(time.time()),
+        }
+        body = json.dumps(
+            {"draft_type": 1, "draft_info": json.dumps(draft_info, ensure_ascii=False), "post_id": ""},
+            ensure_ascii=False,
+        )
+        query = {"mp_publish_ab_val": "0"}
+        if self._token_provider is not None:
+            query["msToken"] = self._token_provider.token()
+        query_str = urlencode(query)
+        a_bogus = self._a_bogus_fn(query_str, body)
+        if not isinstance(a_bogus, str) or not a_bogus:
+            raise ValueError("a_bogus function returned an empty value")
+        url = (
+            f"{self.BASE_URL}{UGCDRAFT_PATH}?{query_str}"
+            f"&a_bogus={urlencode({'a_bogus': a_bogus})[len('a_bogus='):]}"
+        )
+        referer = f"{self.BASE_URL}/profile_v4/weibogroup/publish"
+        payload = self.transport.post_json(url, body, referer)
+        code = str(payload.get("code"))
+        if code != "0":
+            raise PublishError(payload.get("code"), str(payload.get("message") or ""))
+        gid = payload.get("gid") or (payload.get("data") or {}).get("gid")
+        if not gid:
+            raise ValueError("ugc draft response has no gid")
+        return str(gid)
