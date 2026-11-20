@@ -133,3 +133,21 @@ class CreatorWebApiTest(unittest.TestCase):
         with self.assertRaises(CreatorWebApiError) as caught:
             TouTiaoCreatorWebApi(auth).has_account_auth()
         self.assertEqual(caught.exception.code, 100002)
+
+    def test_delete_article_posts_form_group_id(self):
+        session = FakeSession([FakeResponse({"code": 0, "message": "deleted"})])
+        auth = TouTiaoAuth(session=session)
+        auth.prepare_creator_auth("creator_session=web-secret")
+        api = TouTiaoCreatorWebApi(auth)
+        self.assertIsNone(api.delete_article("7710062700176392731"))
+        self.assertEqual(len(session.calls), 1)
+        url, kwargs = session.calls[0]
+        self.assertEqual(url, "https://mp.toutiao.com/mp/agw/article/delete")
+        self.assertEqual(kwargs["params"], {"app_id": 1231})
+        self.assertEqual(kwargs["data"], "group_id=7710062700176392731&reason=")
+        self.assertEqual(kwargs["cookies"], {"creator_session": "web-secret"})
+        self.assertEqual(kwargs["headers"]["Referer"], "https://mp.toutiao.com/profile_v4/manage/content")
+        for bad in ("", "not-digits", "7710_abc", "  "):
+            with self.assertRaises(ValueError):
+                api.delete_article(bad)
+        self.assertEqual(len(session.calls), 1)

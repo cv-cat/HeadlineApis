@@ -93,3 +93,27 @@ class TouTiaoCreatorWebApi:
             allow_redirects=False,
         )
         self._check_response(response)
+
+    def delete_article(self, group_id: str) -> None:
+        """删除已发布文章（POST /mp/agw/article/delete，form 编码）。
+
+        ``group_id`` 是文章在管理端的组 ID——发布响应的 ``pgc_id`` 可直接
+        使用（2026-11-20 实测：form ``group_id=pgc_id`` 删除 code=0）。
+        JSON body 或 ``article_id`` 键均报 20007124 Id invalid。
+        """
+        if not isinstance(group_id, str) or not group_id.strip().isdigit():
+            raise ValueError("group_id must be a numeric article id")
+        from urllib.parse import urlencode
+
+        response = self.auth.session.post(
+            f"{self.BASE_URL}/mp/agw/article/delete",
+            params={"app_id": 1231},
+            data=urlencode({"group_id": group_id, "reason": ""}),
+            cookies=self.auth.creator_cookie,
+            headers={"Accept": "application/json, text/plain, */*",
+                     "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                     "Referer": f"{self.BASE_URL}/profile_v4/manage/content"},
+            timeout=30,
+            allow_redirects=False,
+        )
+        self._check_response(response)
