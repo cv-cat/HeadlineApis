@@ -116,5 +116,54 @@ class PublishTests(unittest.TestCase):
             TouTiaoWebPublisher(PublishTransport(lambda u, b, r: {}), a_bogus_fn="x")
 
 
+class WeitoutiaoTests(unittest.TestCase):
+    def _publisher(self, response):
+        calls = []
+
+        def send(url, body, referer):
+            calls.append((url, body, referer))
+            return response
+
+        return (
+            TouTiaoWebPublisher(PublishTransport(send), a_bogus_fn=lambda q, b: "ab"),
+            calls,
+        )
+
+    def test_publish_weitoutiao_posts_wtt_with_three_fields(self):
+        publisher, calls = self._publisher(
+            {"code": 0, "data": {"thread_id": 1882375498097675, "add_thread_limit": 0}}
+        )
+        data = publisher.publish_weitoutiao("微头条文本")
+        self.assertEqual(data["thread_id"], 1882375498097675)
+        url, body, referer = calls[0]
+        parsed = urlparse(url)
+        self.assertEqual(parsed.path, "/mp/agw/article/wtt")
+        self.assertEqual(parse_qs(parsed.query)["type"], ["wtt"])
+        fields = parse_qs(body, keep_blank_values=True)
+        self.assertEqual(fields["content"], ["微头条文本"])
+        self.assertEqual(fields["save"], ["1"])
+        self.assertEqual(fields["source"], ["mp"])
+        self.assertEqual(len(fields), 3)
+        self.assertEqual(referer, "https://mp.toutiao.com/profile_v4/weibogroup/publish")
+
+    def test_publish_weitoutiao_rejects_empty_content_and_bad_save(self):
+        publisher, _ = self._publisher({"code": 0, "data": {"thread_id": 1}})
+        with self.assertRaises(ValueError):
+            publisher.publish_weitoutiao("   ")
+        with self.assertRaises(ValueError):
+            publisher.publish_weitoutiao("x", save="2")
+
+    def test_publish_weitoutiao_wraps_error_code(self):
+        publisher, _ = self._publisher({"code": 7050, "message": "保存失败"})
+        with self.assertRaises(PublishError) as ctx:
+            publisher.publish_weitoutiao("x", save="0")
+        self.assertEqual(ctx.exception.code, 7050)
+
+    def test_publish_weitoutiao_requires_thread_id(self):
+        publisher, _ = self._publisher({"code": 0, "data": {}})
+        with self.assertRaises(ValueError):
+            publisher.publish_weitoutiao("x")
+
+
 if __name__ == "__main__":
     unittest.main()

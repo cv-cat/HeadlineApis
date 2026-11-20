@@ -75,6 +75,13 @@ PUBLISH_QUERY = {
     "mp_publish_ab_val": "0",
 }
 PUBLISH_PATH = "/mp/agw/article/publish"
+WTT_PATH = "/mp/agw/article/wtt"
+WTT_QUERY = {
+    "source": "mp",
+    "type": "wtt",
+    "aid": "1231",
+    "mp_publish_ab_val": "0",
+}
 
 
 class TouTiaoWebPublisher:
@@ -169,4 +176,32 @@ class TouTiaoWebPublisher:
         data = payload.get("data")
         if not isinstance(data, Mapping) or not data.get("pgc_id"):
             raise ValueError("publish response has no pgc_id")
+        return dict(data)
+
+    def publish_weitoutiao(self, content: str, *, save: str = "1") -> dict:
+        """发微头条（2026-11-20 实测 code=0，返回 thread_id）。
+
+        与图文发布共用 token/传输层；body 只需 ``content/save/source``。
+        """
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("content must be non-empty")
+        if save not in {"0", "1"}:
+            raise ValueError("save must be '0' (draft) or '1' (publish)")
+        body = urlencode([("content", content.strip()), ("save", save), ("source", "mp")])
+        query = dict(WTT_QUERY)
+        if self._token_provider is not None:
+            query["msToken"] = self._token_provider.token()
+        query_str = urlencode(query)
+        a_bogus = self._a_bogus_fn(query_str, body)
+        if not isinstance(a_bogus, str) or not a_bogus:
+            raise ValueError("a_bogus function returned an empty value")
+        url = f"{self.BASE_URL}{WTT_PATH}?{query_str}&a_bogus={urlencode({'a_bogus': a_bogus})[len('a_bogus='):]}"
+        referer = f"{self.BASE_URL}/profile_v4/weibogroup/publish"
+        payload = self.transport.post(url, body, referer)
+        code = str(payload.get("code"))
+        if code != "0":
+            raise PublishError(payload.get("code"), str(payload.get("message") or ""))
+        data = payload.get("data")
+        if not isinstance(data, Mapping) or not data.get("thread_id"):
+            raise ValueError("weitoutiao response has no thread_id")
         return dict(data)
