@@ -34,8 +34,22 @@ except:
     sign_js = execjs.compile(open(sign_path, 'r', encoding='utf-8').read(), cwd=node_modules)
 
 
-def generate_a_bogus(query, data=""):
-    a_bogus = dy_js.call('get_ab', query, data)
+_ABOGUS_JS_CACHE = {}
+_DEFAULT_AB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+_LEGACY_AB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/117.0"
+
+
+def _abogus_js(ua: str):
+    """按 UA 缓存编译版：签名会校验其内嵌 UA 与请求头的一致性，两者必须相同。"""
+    if ua not in _ABOGUS_JS_CACHE:
+        source = open(dy_path, "r", encoding="utf-8").read()
+        source = source.replace(f'"{_LEGACY_AB_UA}",', f'"{ua}",')
+        _ABOGUS_JS_CACHE[ua] = execjs.compile(source, cwd=node_modules)
+    return _ABOGUS_JS_CACHE[ua]
+
+
+def generate_a_bogus(query, data="", ua=_DEFAULT_AB_UA):
+    a_bogus = _abogus_js(ua).call('get_ab', query, data)
     return a_bogus
 
 
