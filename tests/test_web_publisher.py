@@ -1,6 +1,6 @@
 import json
 import unittest
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlparse
 
 from tou_tiao_web_publisher import (
     MsTokenProvider,
@@ -164,6 +164,80 @@ class WeitoutiaoTests(unittest.TestCase):
         publisher, _ = self._publisher({"code": 0, "data": {}})
         with self.assertRaises(ValueError):
             publisher.publish_weitoutiao("x")
+
+
+
+
+class DraftContractTests(unittest.TestCase):
+    def test_draft_body_uses_draft_field_set(self):
+        body = TouTiaoWebPublisher.build_body("", "<p>draft</p>", save="0")
+        keys = [k for k, _ in parse_qsl(body, keep_blank_values=True)]
+        self.assertNotIn("pgc_id", keys)
+        self.assertIn("customer_nick_name", keys)
+        self.assertEqual(len(keys), 27)
+        # 字段序与网页编辑器实测一致
+        self.assertEqual(keys.index("customer_nick_name"), keys.index("star_order_name") + 1)
+
+    def test_publish_body_keeps_pgc_id_and_no_nick_name(self):
+        body = TouTiaoWebPublisher.build_body("标题", "<p>x</p>", save="1")
+        keys = [k for k, _ in parse_qsl(body, keep_blank_values=True)]
+        self.assertEqual(keys[0], "pgc_id")
+        self.assertNotIn("customer_nick_name", keys)
+
+    def test_draft_allows_empty_title(self):
+        body = TouTiaoWebPublisher.build_body("", "<p>d</p>", save="0")
+        self.assertIn("content=", body)
+
+    def test_publish_requires_title(self):
+        with self.assertRaises(ValueError):
+            TouTiaoWebPublisher.build_body("", "<p>x</p>", save="1")
+
+
+
+
+class DraftApiTests(unittest.TestCase):
+    def _publisher(self, send=None, get=None):
+        class _T(PublishTransport):
+            def __init__(self):
+                super().__init__(send or (lambda u, b, r: {"code": 0, "data": {"pgc_id": "1"}}))
+                self._get = get
+
+            def get(self, url, referer):
+                if self._get is None:
+                    raise NotImplementedError
+                return self._get(url, referer)
+        return TouTiaoWebPublisher(_T(), a_bogus_fn=lambda query, body: "AB" * 10)
+
+    def test_save_article_draft_returns_pgc_id(self):
+        publisher = self._publisher()
+        data = publisher.save_article_draft("<p>draft</p>", title="题目")
+        self.assertEqual(data, {"pgc_id": "1"})
+
+    def test_get_weitoutiao_draft_returns_envelope(self):
+        seen = {}
+
+        def fake_get(url, referer):
+            seen["url"] = url
+            seen["referer"] = referer
+            return {"code": 0, "draft": {"gid": "g1", "origin_draft": "{}"}}
+
+        publisher = self._publisher(get=fake_get)
+        draft = publisher.get_weitoutiao_draft("g1")
+        self.assertEqual(draft["gid"], "g1")
+        self.assertIn("/mp/agw/draft/get_ugc_draft", seen["url"])
+        self.assertIn("gid=g1", seen["url"])
+        self.assertIn("a_bogus=", seen["url"])
+        self.assertIn("weibogroup/publish", seen["referer"])
+
+    def test_get_weitoutiao_draft_rejects_bad_code(self):
+        publisher = self._publisher(get=lambda u, r: {"code": 1064, "message": "err"})
+        with self.assertRaises(PublishError):
+            publisher.get_weitoutiao_draft("g1")
+
+    def test_get_weitoutiao_draft_rejects_empty_gid(self):
+        publisher = self._publisher()
+        with self.assertRaises(ValueError):
+            publisher.get_weitoutiao_draft("  ")
 
 
 if __name__ == "__main__":

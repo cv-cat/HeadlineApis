@@ -71,6 +71,10 @@ class PublishTransport:
         """JSON body 的 POST。默认复用 send；实现方可按 Content-Type 分流。"""
         return self.post(url, body, referer)
 
+    def get(self, url: str, referer: str) -> dict:
+        """GET 请求（无 body）；实现方不支持时抛 NotImplementedError。"""
+        raise NotImplementedError("transport does not implement GET")
+
 
 PUBLISH_QUERY = {
     "source": "mp",
@@ -81,6 +85,7 @@ PUBLISH_QUERY = {
 PUBLISH_PATH = "/mp/agw/article/publish"
 WTT_PATH = "/mp/agw/article/wtt"
 UGCDRAFT_PATH = "/mp/agw/draft/save_ugc_draft"
+GET_UGCDRAFT_PATH = "/mp/agw/draft/get_ugc_draft"
 WTT_QUERY = {
     "source": "mp",
     "type": "wtt",
@@ -109,12 +114,14 @@ class TouTiaoWebPublisher:
     @staticmethod
     def build_body(title: str, content_html: str, *, save: str = "1") -> str:
         """27 字段 publish 契约 body（urlencode）。"""
-        if not isinstance(title, str) or not title.strip():
-            raise ValueError("title must be non-empty")
+        if not isinstance(title, str):
+            raise ValueError("title must be a string")
         if not isinstance(content_html, str) or not content_html.strip():
             raise ValueError("content_html must be non-empty")
         if save not in {"0", "1"}:
             raise ValueError("save must be '0' (draft) or '1' (publish)")
+        if save == "1" and not title.strip():
+            raise ValueError("title must be non-empty when publishing")
         extra = json.dumps(
             {
                 "content_source": 100000000402,
@@ -132,8 +139,11 @@ class TouTiaoWebPublisher:
             },
             separators=(",", ":"),
         )
-        fields = [
-            ("pgc_id", ""),
+        is_draft = save == "0"
+        fields = []
+        if not is_draft:
+            fields.append(("pgc_id", ""))
+        fields += [
             ("source", "29"),
             ("extra", extra),
             ("content", content_html),
@@ -157,6 +167,10 @@ class TouTiaoWebPublisher:
             ("tree_plan_article", "0"),
             ("star_order_id", ""),
             ("star_order_name", ""),
+        ]
+        if is_draft:
+            fields.append(("customer_nick_name", ""))
+        fields += [
             ("activity_tag", "0"),
             ("trends_writing_tag", "0"),
             ("claim_exclusive", "0"),
@@ -164,7 +178,7 @@ class TouTiaoWebPublisher:
         return urlencode(fields)
 
     def publish(self, title: str, content_html: str, *, save: str = "1") -> dict:
-        """发布（save='1'）或存草稿（save='0'，可能被 7050 门禁拒绝）。"""
+        """发布（save='1'）或存草稿（save='0'）。草稿与发布用不同的字段集合。"""
         body = self.build_body(title, content_html, save=save)
         query = dict(PUBLISH_QUERY)
         if self._token_provider is not None:
@@ -182,6 +196,38 @@ class TouTiaoWebPublisher:
         if not isinstance(data, Mapping) or not data.get("pgc_id"):
             raise ValueError("publish response has no pgc_id")
         return dict(data)
+
+    def save_article_draft(self, content_html: str, *, title: str = "") -> dict:
+        """存图文草稿（save='0'）。草稿字段集与发布不同（无 pgc_id，带 customer_nick_name）。
+
+        返回 ``{"pgc_id": <草稿id>, ...}``。草稿标题可为空。
+        """
+        return self.publish(title, content_html, save="0")
+
+    def get_weitoutiao_draft(self, gid: str) -> dict:
+        """读微头条草稿（GET /mp/agw/draft/get_ugc_draft，返回 draft 信封）。"""
+        if not isinstance(gid, str) or not gid.strip():
+            raise ValueError("gid must be non-empty")
+        query = {"draft_type": "1", "gid": gid.strip(), "mp_publish_ab_val": "0"}
+        if self._token_provider is not None:
+            query["msToken"] = self._token_provider.token()
+        query_str = urlencode(query)
+        a_bogus = self._a_bogus_fn(query_str, "")
+        if not isinstance(a_bogus, str) or not a_bogus:
+            raise ValueError("a_bogus function returned an empty value")
+        url = (
+            f"{self.BASE_URL}{GET_UGCDRAFT_PATH}?{query_str}"
+            f"&a_bogus={urlencode({'a_bogus': a_bogus})[len('a_bogus='):]}"
+        )
+        referer = f"{self.BASE_URL}/profile_v4/weibogroup/publish"
+        payload = self.transport.get(url, referer)
+        code = str(payload.get("code"))
+        if code != "0":
+            raise PublishError(payload.get("code"), str(payload.get("message") or ""))
+        draft = payload.get("draft")
+        if not isinstance(draft, Mapping):
+            raise ValueError("ugc draft response has no draft envelope")
+        return dict(draft)
 
     def publish_weitoutiao(self, content: str, *, save: str = "1") -> dict:
         """发微头条（2026-11-20 实测 code=0，返回 thread_id）。
